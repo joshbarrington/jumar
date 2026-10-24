@@ -3,6 +3,7 @@ use std::sync::mpsc::Receiver;
 
 use jumar_core::apply::{self, Blocked, Start, Step};
 use jumar_core::editor::Key;
+use jumar_core::herdr::Herdr;
 use jumar_core::model::Worktree;
 use jumar_core::plan::Operation;
 use jumar_core::safety::Tier;
@@ -79,7 +80,11 @@ impl Confirm {
             .map(|(index, item)| match item {
                 Err(blocked) => State::Skipped(blocked.reason.clone()),
                 Ok(Step::Remove(remove)) if !remove.is_runnable() => {
-                    State::Skipped("uncommitted changes, not forced".into())
+                    State::Skipped(if remove.agents() > 0 {
+                        "agent running, not forced".into()
+                    } else {
+                        "uncommitted changes, not forced".into()
+                    })
                 }
                 Ok(step) => {
                     steps.push((index, step.clone()));
@@ -89,7 +94,7 @@ impl Confirm {
             .collect();
         Report {
             remaining: steps.len(),
-            results: apply::execute_all(steps),
+            results: apply::execute_all(steps, Herdr::new()),
             worktrees: self.worktrees,
             items: self.items,
             states,
@@ -232,6 +237,20 @@ fn describe<'a>(item: &'a Item, worktrees: &[Worktree], marker: Span<'a>) -> Lin
                     Span::raw(format!("{n} uncommitted change(s), f to force")).red()
                 });
             }
+            if let Some(workspace) = &remove.workspace {
+                spans.push(
+                    Span::raw(format!("  closes herdr workspace {}", workspace.id)).dark_gray(),
+                );
+                if workspace.agents > 0 {
+                    let n = workspace.agents;
+                    spans.push(Span::raw("  "));
+                    spans.push(if remove.force {
+                        Span::raw(format!("FORCE: stops {n} agent(s)")).red().bold()
+                    } else {
+                        Span::raw(format!("{n} agent(s) running, f to force")).red()
+                    });
+                }
+            }
         }
         Ok(Step::Move(step)) => {
             spans.push(verb("MOVE", Color::Yellow));
@@ -242,6 +261,12 @@ fn describe<'a>(item: &'a Item, worktrees: &[Worktree], marker: Span<'a>) -> Lin
             )));
             if let Some(branch) = &step.rename_branch {
                 spans.push(Span::raw(format!("  renames branch to {branch}")).dark_gray());
+            }
+            if let Some(workspace) = &step.workspace {
+                spans.push(
+                    Span::raw(format!("  closes and reopens herdr workspace {workspace}"))
+                        .dark_gray(),
+                );
             }
         }
         Ok(Step::Create(create)) => {
@@ -255,7 +280,12 @@ fn describe<'a>(item: &'a Item, worktrees: &[Worktree], marker: Span<'a>) -> Lin
                 Start::Existing => "existing branch".to_owned(),
                 Start::From(base) => format!("new branch from {base}"),
             };
-            spans.push(Span::raw(format!("  {}, {start}", create.source)).dark_gray());
+            let herdr = if create.open_in_herdr {
+                ", opens in herdr"
+            } else {
+                ""
+            };
+            spans.push(Span::raw(format!("  {}, {start}{herdr}", create.source)).dark_gray());
         }
         Err(blocked) => {
             let (name, subject) = match &blocked.operation {

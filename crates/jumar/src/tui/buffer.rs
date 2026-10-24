@@ -1,8 +1,10 @@
 use std::sync::Arc;
-use std::sync::mpsc::Receiver;
+use std::sync::mpsc::{self, Receiver};
+use std::thread;
 
 use jumar_core::config::Tool;
 use jumar_core::editor::{Editor, Entry, Mode};
+use jumar_core::herdr::{self, Herdr};
 use jumar_core::inspect::inspect_all;
 use jumar_core::model::{Health, Worktree};
 use jumar_core::plan::Line as BufferLine;
@@ -26,6 +28,8 @@ pub struct Buffer {
     inspections: Receiver<(usize, InspectResult)>,
     scroll: usize,
     tool_hint: String,
+    herdr: Option<herdr::State>,
+    herdr_updates: Receiver<herdr::State>,
 }
 
 /// Display text for one cell of each column, computed once per frame.
@@ -36,6 +40,7 @@ struct Row<'a> {
     branch: String,
     state: String,
     source: &'a str,
+    herdr: Span<'static>,
     style: Style,
     state_style: Style,
 }
@@ -55,6 +60,13 @@ impl Buffer {
                 ),
             })
             .collect();
+        let (tx, herdr_updates) = mpsc::channel();
+        thread::spawn(move || {
+            if let Ok(state) = Herdr::new().state() {
+                // The buffer may already be gone after a reload.
+                let _ = tx.send(state);
+            }
+        });
         let mut editor = Editor::new(entries);
         if let Some(warning) = scan.warnings.first() {
             editor.set_message(warning.clone());
@@ -73,6 +85,8 @@ impl Buffer {
                 .map(|t| format!("{} {}", t.key, t.name))
                 .collect::<Vec<_>>()
                 .join("  "),
+            herdr: None,
+            herdr_updates,
         }
     }
 
@@ -84,6 +98,9 @@ impl Buffer {
         for (index, result) in self.inspections.try_iter() {
             self.results[index] = Some(result);
             self.loading -= 1;
+        }
+        if let Ok(state) = self.herdr_updates.try_recv() {
+            self.herdr = Some(state);
         }
     }
 
@@ -111,6 +128,7 @@ impl Buffer {
                         branch: format::branch(worktree.head.as_ref()),
                         state: format::state(worktree, result),
                         source: format::source(worktree),
+                        herdr: self.herdr_marker(worktree),
                         style: if renamed {
                             Style::new().fg(Color::Yellow)
                         } else {
@@ -131,11 +149,26 @@ impl Buffer {
                     branch: String::new(),
                     state: String::new(),
                     source: "",
+                    herdr: Span::raw(""),
                     style: Style::new().fg(Color::Green),
                     state_style: Style::new(),
                 },
             })
             .collect()
+    }
+
+    fn herdr_marker(&self, worktree: &Worktree) -> Span<'static> {
+        match self
+            .herdr
+            .as_ref()
+            .and_then(|state| state.workspace_for(&worktree.path))
+        {
+            Some(workspace) if workspace.agents > 0 => {
+                Span::raw(format!("◆ {} agent(s)", workspace.agents)).yellow()
+            }
+            Some(_) => Span::raw("◇ open").dark_gray(),
+            None => Span::raw(""),
+        }
     }
 
     pub fn render(&mut self, frame: &mut Frame) {
@@ -177,6 +210,8 @@ impl Buffer {
                     Span::styled(r.state.clone(), r.state_style),
                     Span::raw("  "),
                     Span::raw(r.source).fg(Color::DarkGray),
+                    Span::raw("  "),
+                    r.herdr.clone(),
                 ]);
                 if Some(pos) == cursor_pos {
                     line.bg(Color::Indexed(236))

@@ -1,0 +1,29 @@
+id = "joshbarrington.jumar"
+name = "jumar"
+version = "0.1.0"
+min_herdr_version = "0.9.3"
+platforms = ["macos", "linux"]
+description = "Manage git worktrees from an oil.nvim-style buffer in a floating pane."
+
+# Install downloads this platform's release binary into bin/; `plugin link` skips it.
+[[build]]
+platforms = ["macos", "linux"]
+command = ["bash", "herdr/install.sh"]
+
+[[panes]]
+id = "pane"
+title = "jumar"
+placement = "overlay"
+command = ["bin/jumar"]
+
+[[actions]]
+id = "open"
+title = "jumar: open"
+contexts = ["pane", "workspace"]
+command = ["bin/jumar", "--action", "open"]
+
+[[actions]]
+id = "toggle"
+title = "jumar: toggle"
+contexts = ["pane", "workspace"]
+command = ["bin/jumar", "--action", "toggle"]

@@ -31,6 +31,10 @@ pub enum Error {
     },
     #[error("unexpected git output: {0}")]
     GitParse(String),
+    #[error("could not run herdr: {0}")]
+    HerdrSpawn(#[source] io::Error),
+    #[error("{0}")]
+    Herdr(String),
     #[error("{} has no default branch (no origin/HEAD, main or master)", .0.display())]
     NoDefaultBranch(PathBuf),
     #[error("path is not valid UTF-8: {}", .0.display())]

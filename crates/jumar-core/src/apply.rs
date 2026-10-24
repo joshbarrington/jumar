@@ -5,6 +5,7 @@ use std::thread;
 use crate::config::Source;
 use crate::discovery;
 use crate::git;
+use crate::herdr::{self, Herdr};
 use crate::inspect;
 use crate::model::{Head, Health, Worktree};
 use crate::plan::{EntryId, Operation};
@@ -26,6 +27,8 @@ pub struct Remove {
     pub changes: Vec<String>,
     pub force: bool,
     pub delete_branch: bool,
+    /// The herdr workspace showing this worktree; removing goes through herdr then.
+    pub workspace: Option<herdr::Workspace>,
 }
 
 impl Remove {
@@ -38,8 +41,14 @@ impl Remove {
     }
 
     #[must_use]
+    pub fn agents(&self) -> usize {
+        self.workspace.as_ref().map_or(0, |w| w.agents)
+    }
+
+    /// Uncommitted changes and running agents both need an explicit force.
+    #[must_use]
     pub fn is_runnable(&self) -> bool {
-        self.tier != Tier::Dirty || self.force
+        (self.tier != Tier::Dirty && self.agents() == 0) || self.force
     }
 }
 
@@ -48,6 +57,8 @@ pub struct Move {
     pub worktree: Worktree,
     pub to: PathBuf,
     pub rename_branch: Option<String>,
+    /// herdr has no move, so its workspace is closed first and reopened at `to`.
+    pub workspace: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -57,6 +68,7 @@ pub struct Create {
     pub path: PathBuf,
     pub branch: String,
     pub start: Start,
+    pub open_in_herdr: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -81,6 +93,8 @@ pub struct Context<'a> {
     pub sources: &'a [Source],
     pub default_source: &'a str,
     pub home: &'a Path,
+    /// herdr's open workspaces, when a herdr server answered.
+    pub herdr: Option<&'a herdr::State>,
 }
 
 /// Resolves planned operations against git so the confirm screen can show exactly what
@@ -105,11 +119,15 @@ fn resolve(context: &Context, operation: &Operation) -> Result<Step, String> {
             rename_branch,
         } => {
             let worktree = &context.worktrees[id.0];
-            check_supported(worktree)?;
+            let workspace = workspace_for(context, worktree);
+            if workspace.is_some_and(|w| w.agents > 0) {
+                return Err("an agent is running in its herdr workspace".into());
+            }
             Ok(Step::Move(Move {
                 worktree: worktree.clone(),
                 to: to.clone(),
                 rename_branch: rename_branch.clone(),
+                workspace: workspace.map(|w| w.id.clone()),
             }))
         }
         Operation::Create { target, base, near } => {
@@ -118,19 +136,12 @@ fn resolve(context: &Context, operation: &Operation) -> Result<Step, String> {
     }
 }
 
-// herdr keeps its own record of the worktrees it opened, so changing them behind its
-// back would leave stale workspaces until jumar drives herdr's API instead.
-fn check_supported(worktree: &Worktree) -> Result<(), String> {
-    if worktree.source.as_deref() == Some("herdr") {
-        Err("herdr worktrees are not supported yet".into())
-    } else {
-        Ok(())
-    }
+fn workspace_for<'a>(context: &Context<'a>, worktree: &Worktree) -> Option<&'a herdr::Workspace> {
+    context.herdr?.workspace_for(&worktree.path)
 }
 
 fn remove(context: &Context, id: EntryId) -> Result<Step, String> {
     let worktree = &context.worktrees[id.0];
-    check_supported(worktree)?;
     if worktree.health == Health::Orphaned {
         return Err("git no longer tracks this directory; delete it by hand".into());
     }
@@ -152,6 +163,7 @@ fn remove(context: &Context, id: EntryId) -> Result<Step, String> {
         changes,
         force: false,
         delete_branch: has_branch && tier.deletes_branch_by_default(),
+        workspace: workspace_for(context, worktree).cloned(),
     }))
 }
 
@@ -203,6 +215,7 @@ fn create(
         path,
         branch: name.to_owned(),
         start,
+        open_in_herdr: source.opens_in_herdr() && context.herdr.is_some(),
     })
 }
 
@@ -261,35 +274,49 @@ pub fn expand_template(template: &str, repo: &Path, name: &str, home: &Path) -> 
 
 /// # Errors
 ///
-/// Fails when a git command fails; earlier commands of the step are not rolled back.
-pub fn execute(step: &Step) -> Result<()> {
+/// Fails when a git or herdr command fails; earlier commands of the step are not rolled
+/// back.
+pub fn execute(step: &Step, herdr: &Herdr) -> Result<()> {
     match step {
         Step::Remove(remove) => {
             let worktree = &remove.worktree;
-            // A prunable worktree's directory is gone, which `worktree remove` refuses.
-            if worktree.health == Health::Prunable {
-                git::run(&worktree.repo, &["worktree", "prune"])?;
-            } else {
-                let path = utf8(&worktree.path)?;
-                let mut args = vec!["worktree", "remove"];
-                if remove.force {
-                    args.push("--force");
+            match &remove.workspace {
+                Some(workspace) if worktree.health == Health::Healthy => {
+                    herdr.remove(&workspace.id, remove.force)?;
                 }
-                args.push(path);
-                git::run(&worktree.repo, &args)?;
+                // A prunable worktree's directory is gone, which `worktree remove` refuses.
+                _ if worktree.health == Health::Prunable => {
+                    git::run(&worktree.repo, &["worktree", "prune"])?;
+                }
+                _ => {
+                    let mut args = vec!["worktree", "remove"];
+                    if remove.force {
+                        args.push("--force");
+                    }
+                    args.push(utf8(&worktree.path)?);
+                    git::run(&worktree.repo, &args)?;
+                }
             }
+            // herdr may already have deleted the branch along with the checkout.
             if remove.delete_branch
                 && let Some(branch) = remove.branch()
+                && git::branch_exists(&worktree.repo, branch)?
             {
                 git::run(&worktree.repo, &["branch", "-D", branch])?;
             }
         }
         Step::Move(step) => {
             let worktree = &step.worktree;
+            if let Some(workspace) = &step.workspace {
+                herdr.close_workspace(workspace)?;
+            }
             let args = ["worktree", "move", utf8(&worktree.path)?, utf8(&step.to)?];
             git::run(&worktree.repo, &args)?;
             if let (Some(new), Some(Head::Branch(old))) = (&step.rename_branch, &worktree.head) {
                 git::run(&worktree.repo, &["branch", "-m", old, new])?;
+            }
+            if step.workspace.is_some() {
+                herdr.open(&step.to, &worktree.repo, false)?;
             }
         }
         Step::Create(create) => {
@@ -312,6 +339,9 @@ pub fn execute(step: &Step) -> Result<()> {
                     git::run(&create.repo, &args)?;
                 }
             }
+            if create.open_in_herdr {
+                herdr.open(&create.path, &create.repo, false)?;
+            }
         }
     }
     Ok(())
@@ -320,11 +350,11 @@ pub fn execute(step: &Step) -> Result<()> {
 /// Runs `steps` one at a time on a background thread, in order, sending each result
 /// tagged with its index. Later steps still run after a failure.
 #[must_use]
-pub fn execute_all(steps: Vec<(usize, Step)>) -> Receiver<(usize, Result<()>)> {
+pub fn execute_all(steps: Vec<(usize, Step)>, herdr: Herdr) -> Receiver<(usize, Result<()>)> {
     let (tx, rx) = mpsc::channel();
     thread::spawn(move || {
         for (index, step) in steps {
-            if tx.send((index, execute(&step))).is_err() {
+            if tx.send((index, execute(&step, &herdr))).is_err() {
                 break;
             }
         }

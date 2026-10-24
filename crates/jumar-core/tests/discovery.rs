@@ -56,6 +56,7 @@ impl Fixture {
             name: "claude".into(),
             globs: globs.iter().map(|g| (*g).to_owned()).collect(),
             create_path: None,
+            open_in_herdr: None,
         }];
         scan_sources(&sources, self.home.path()).unwrap()
     }

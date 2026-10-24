@@ -4,6 +4,7 @@ pub mod discovery;
 pub mod editor;
 mod error;
 pub mod git;
+pub mod herdr;
 pub mod inspect;
 pub mod model;
 pub mod plan;

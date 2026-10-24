@@ -10,6 +10,7 @@ use anyhow::Result;
 use jumar_core::apply::{self, Context};
 use jumar_core::config::ToolMode;
 use jumar_core::editor::{Action, Key, Mode};
+use jumar_core::herdr::Herdr;
 use jumar_core::model::Health;
 use jumar_core::plan::{self, EntryId};
 use jumar_core::tool;
@@ -157,8 +158,14 @@ impl App {
                 editor.set_message("unsaved changes (:w to apply, :q! to discard)");
             }
             Action::Open(id) => {
-                let path = self.buffer.worktrees[id.0].path.clone();
-                return Some(Effect::Exit(Outcome::Open(path)));
+                let worktree = &self.buffer.worktrees[id.0];
+                if !Herdr::is_inside() {
+                    return Some(Effect::Exit(Outcome::Open(worktree.path.clone())));
+                }
+                match Herdr::new().open(&worktree.path, &worktree.repo, true) {
+                    Ok(()) => return Some(Effect::Exit(Outcome::Quit)),
+                    Err(err) => editor.set_message(err.to_string()),
+                }
             }
             Action::Tool { key, id } => return self.run_tool(key, id),
             Action::Write { quit } => match plan::plan(&self.buffer.worktrees, editor.lines()) {
@@ -171,12 +178,19 @@ impl App {
                 Ok(operations) => {
                     let tiers = self.buffer.tiers();
                     let sources = self.env.config.sources();
+                    let herdr = Herdr::new().state().ok();
+                    let fallback = if Herdr::is_inside() {
+                        "herdr"
+                    } else {
+                        "claude"
+                    };
                     let context = Context {
                         worktrees: &self.buffer.worktrees,
                         tiers: &tiers,
                         sources: &sources,
-                        default_source: self.env.config.default_create_source(),
+                        default_source: self.env.config.default_create_source().unwrap_or(fallback),
                         home: &self.env.home,
+                        herdr: herdr.as_ref(),
                     };
                     let items = apply::prepare(&context, operations);
                     let worktrees = Arc::clone(&self.buffer.worktrees);
@@ -222,9 +236,8 @@ impl App {
         let result = match tool.mode {
             ToolMode::Suspend => return Some(Effect::Suspend { command, dir }),
             ToolMode::Detach => tools::detach(&command, &dir).map(|()| None),
-            ToolMode::HerdrWorkspace => {
-                herdr_workspace(&command, &dir).map(|()| Some(Effect::Exit(Outcome::Quit)))
-            }
+            ToolMode::HerdrWorkspace => herdr_workspace(&command, &dir, &worktree.repo)
+                .map(|()| Some(Effect::Exit(Outcome::Quit))),
         };
         match result {
             Ok(effect) => {
@@ -239,13 +252,11 @@ impl App {
     }
 }
 
-fn herdr_workspace(command: &[String], dir: &Path) -> Result<()> {
-    if std::env::var_os("HERDR_ENV").is_none() {
+fn herdr_workspace(command: &[String], dir: &Path, repo: &Path) -> Result<()> {
+    if !Herdr::is_inside() {
         anyhow::bail!("needs to run inside herdr");
     }
-    let path = dir.to_string_lossy().into_owned();
-    let open = ["herdr", "worktree", "open", "--path", &path, "--focus"].map(String::from);
-    tools::run_captured(&open, dir)?;
+    Herdr::new().open(dir, repo, true)?;
     tools::run_captured(command, dir)
 }
 

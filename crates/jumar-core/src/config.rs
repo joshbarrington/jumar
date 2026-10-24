@@ -6,9 +6,11 @@
 //! globs = ["~/work/*/.worktrees/*"]
 //! # {repo} is the main checkout's path, {repo_name} its directory name.
 //! create_path = "{repo}/.worktrees/{name}"
+//! open_in_herdr = false
 //!
 //! # Same name as a preset: replaces its globs (empty disables it), and its
-//! # create_path when given.
+//! # create_path and open_in_herdr when given. Without default_create_source, new
+//! # worktrees go to the herdr source inside herdr, and the claude source outside it.
 //! [[source]]
 //! name = "claude"
 //! globs = ["~/code/*/.claude/worktrees/*"]
@@ -37,6 +39,15 @@ pub struct Source {
     pub globs: Vec<String>,
     /// Where new worktrees go. Without one, the source cannot create worktrees.
     pub create_path: Option<String>,
+    /// Open newly created worktrees as herdr workspaces.
+    pub open_in_herdr: Option<bool>,
+}
+
+impl Source {
+    #[must_use]
+    pub fn opens_in_herdr(&self) -> bool {
+        self.open_in_herdr.unwrap_or(false)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -110,6 +121,9 @@ impl Config {
                     if user.create_path.is_some() {
                         preset.create_path.clone_from(&user.create_path);
                     }
+                    if user.open_in_herdr.is_some() {
+                        preset.open_in_herdr = user.open_in_herdr;
+                    }
                 }
                 None => sources.push(user.clone()),
             }
@@ -133,8 +147,8 @@ impl Config {
     }
 
     #[must_use]
-    pub fn default_create_source(&self) -> &str {
-        self.default_create_source.as_deref().unwrap_or("claude")
+    pub fn default_create_source(&self) -> Option<&str> {
+        self.default_create_source.as_deref()
     }
 }
 
@@ -155,11 +169,13 @@ fn presets() -> Vec<Source> {
                 "~/github/*/.claude/worktrees/*".into(),
             ],
             create_path: Some("{repo}/.claude/worktrees/{name}".into()),
+            open_in_herdr: None,
         },
         Source {
             name: "herdr".into(),
             globs: vec!["~/.herdr/worktrees/*/*".into()],
-            create_path: None,
+            create_path: Some("~/.herdr/worktrees/{repo_name}/{name}".into()),
+            open_in_herdr: Some(true),
         },
     ]
 }
@@ -271,8 +287,15 @@ mod tests {
     }
 
     #[test]
-    fn default_create_source_should_be_claude_when_unset() {
-        assert_eq!(parse("").default_create_source(), "claude");
+    fn default_create_source_should_be_unset_by_default() {
+        assert_eq!(parse("").default_create_source(), None);
+    }
+
+    #[test]
+    fn sources_should_keep_preset_open_in_herdr_when_user_omits_it() {
+        let config = parse("[[source]]\nname = \"herdr\"\nglobs = [\"~/h/*\"]\n");
+
+        assert!(config.sources()[1].opens_in_herdr());
     }
 
     #[test]
