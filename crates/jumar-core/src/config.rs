@@ -12,6 +12,15 @@
 //! [[source]]
 //! name = "claude"
 //! globs = ["~/code/*/.claude/worktrees/*"]
+//!
+//! # Run with <Space> then `key` on a worktree. Same name as a preset replaces it; an
+//! # empty command removes it. Placeholders: {path} {repo} {branch} {base}
+//! # {default_branch}, where {base} is the merge-base with the default branch.
+//! [[tool]]
+//! name = "lazygit"
+//! key = "g"
+//! command = ["lazygit"]
+//! mode = "suspend"   # suspend | herdr-workspace | detach
 //! ```
 
 use std::path::{Path, PathBuf};
@@ -30,11 +39,36 @@ pub struct Source {
     pub create_path: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Tool {
+    pub name: String,
+    pub key: char,
+    #[serde(default)]
+    pub command: Vec<String>,
+    #[serde(default)]
+    pub mode: ToolMode,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ToolMode {
+    /// Hand the terminal to the tool in the worktree, and come back when it exits.
+    #[default]
+    Suspend,
+    /// Focus the worktree's herdr workspace, run the command there, and close jumar.
+    HerdrWorkspace,
+    /// Start the tool in the background and keep going.
+    Detach,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
     #[serde(default, rename = "source")]
     user_sources: Vec<Source>,
+    #[serde(default, rename = "tool")]
+    user_tools: Vec<Tool>,
     default_create_source: Option<String>,
 }
 
@@ -83,6 +117,21 @@ impl Config {
         sources
     }
 
+    /// Presets first, with same-named user tools replacing them, then the rest. Tools with
+    /// an empty command are dropped.
+    #[must_use]
+    pub fn tools(&self) -> Vec<Tool> {
+        let mut tools = preset_tools();
+        for user in &self.user_tools {
+            match tools.iter_mut().find(|t| t.name == user.name) {
+                Some(preset) => *preset = user.clone(),
+                None => tools.push(user.clone()),
+            }
+        }
+        tools.retain(|t| !t.command.is_empty());
+        tools
+    }
+
     #[must_use]
     pub fn default_create_source(&self) -> &str {
         self.default_create_source.as_deref().unwrap_or("claude")
@@ -111,6 +160,35 @@ fn presets() -> Vec<Source> {
             name: "herdr".into(),
             globs: vec!["~/.herdr/worktrees/*/*".into()],
             create_path: None,
+        },
+    ]
+}
+
+fn preset_tools() -> Vec<Tool> {
+    vec![
+        Tool {
+            name: "revdiff".into(),
+            key: 'd',
+            command: vec!["revdiff".into(), "{base}".into()],
+            mode: ToolMode::Suspend,
+        },
+        // reviewr's `open` acts on the focused workspace, which herdr-workspace mode
+        // focuses first.
+        Tool {
+            name: "reviewr".into(),
+            key: 'r',
+            command: [
+                "herdr",
+                "plugin",
+                "action",
+                "invoke",
+                "open",
+                "--plugin",
+                "persiyanov.reviewr",
+            ]
+            .map(Into::into)
+            .to_vec(),
+            mode: ToolMode::HerdrWorkspace,
         },
     ]
 }
@@ -161,6 +239,35 @@ mod tests {
             config.sources()[0].create_path.as_deref(),
             Some("~/w/{name}")
         );
+    }
+
+    #[test]
+    fn tools_should_include_presets() {
+        let names: Vec<_> = parse("").tools().into_iter().map(|t| t.name).collect();
+
+        assert_eq!(names, ["revdiff", "reviewr"]);
+    }
+
+    #[test]
+    fn tools_should_replace_preset_with_same_name() {
+        let config = parse("[[tool]]\nname = \"revdiff\"\nkey = \"v\"\ncommand = [\"revdiff\"]\n");
+
+        assert_eq!(config.tools()[0].key, 'v');
+    }
+
+    #[test]
+    fn tools_should_drop_tool_with_empty_command() {
+        let config = parse("[[tool]]\nname = \"reviewr\"\nkey = \"r\"\n");
+
+        assert_eq!(config.tools().len(), 1);
+    }
+
+    #[test]
+    fn tools_should_parse_mode() {
+        let config =
+            parse("[[tool]]\nname = \"x\"\nkey = \"x\"\ncommand = [\"x\"]\nmode = \"detach\"\n");
+
+        assert_eq!(config.tools()[2].mode, ToolMode::Detach);
     }
 
     #[test]

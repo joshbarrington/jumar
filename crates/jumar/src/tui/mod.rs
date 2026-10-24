@@ -2,22 +2,29 @@ mod buffer;
 mod confirm;
 
 use std::io;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Result;
 use jumar_core::apply::{self, Context};
+use jumar_core::config::ToolMode;
 use jumar_core::editor::{Action, Key, Mode};
-use jumar_core::plan;
+use jumar_core::model::Health;
+use jumar_core::plan::{self, EntryId};
+use jumar_core::tool;
 use ratatui::DefaultTerminal;
 use ratatui::crossterm::cursor::SetCursorStyle;
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::crossterm::execute;
+use ratatui::crossterm::terminal::{
+    EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
+};
 use ratatui::style::{Color, Stylize};
 use ratatui::text::Span;
 
 use crate::discover::{self, Env};
+use crate::tools;
 use buffer::Buffer;
 use confirm::{Confirm, Decision, Report};
 
@@ -28,7 +35,7 @@ pub enum Outcome {
 
 pub fn run() -> Result<Outcome> {
     let env = Env::load()?;
-    let buffer = Buffer::new(discover::scan(&env)?);
+    let buffer = Buffer::new(discover::scan(&env)?, &env.config.tools());
     let mut app = App {
         env,
         buffer,
@@ -39,6 +46,12 @@ pub fn run() -> Result<Outcome> {
     ratatui::restore();
     execute!(io::stdout(), SetCursorStyle::DefaultUserShape)?;
     outcome
+}
+
+/// What the event loop must do for the app, beyond redrawing.
+enum Effect {
+    Exit(Outcome),
+    Suspend { command: Vec<String>, dir: PathBuf },
 }
 
 enum Screen {
@@ -91,14 +104,22 @@ impl App {
             if let Event::Key(key) = event::read()?
                 && key.kind == KeyEventKind::Press
                 && let Some(key) = convert(key)
-                && let Some(outcome) = self.handle(key)?
             {
-                return Ok(outcome);
+                match self.handle(key)? {
+                    Some(Effect::Exit(outcome)) => return Ok(outcome),
+                    Some(Effect::Suspend { command, dir }) => {
+                        if let Err(err) = suspend(terminal, &command, &dir)? {
+                            self.buffer.editor.set_message(format!("{err:#}"));
+                        }
+                        insert_shape = None;
+                    }
+                    None => {}
+                }
             }
         }
     }
 
-    fn handle(&mut self, key: Key) -> Result<Option<Outcome>> {
+    fn handle(&mut self, key: Key) -> Result<Option<Effect>> {
         match &mut self.screen {
             Screen::Edit => {
                 if let Some(action) = self.buffer.editor.handle(key) {
@@ -118,9 +139,9 @@ impl App {
             },
             Screen::Report(report) if !report.is_running() => {
                 if report.quit_after {
-                    return Ok(Some(Outcome::Quit));
+                    return Ok(Some(Effect::Exit(Outcome::Quit)));
                 }
-                self.buffer = Buffer::new(discover::scan(&self.env)?);
+                self.buffer = Buffer::new(discover::scan(&self.env)?, &self.env.config.tools());
                 self.screen = Screen::Edit;
             }
             Screen::Report(_) => {}
@@ -128,20 +149,22 @@ impl App {
         Ok(None)
     }
 
-    fn act(&mut self, action: Action) -> Option<Outcome> {
+    fn act(&mut self, action: Action) -> Option<Effect> {
         let editor = &mut self.buffer.editor;
         match action {
-            Action::Quit => return Some(Outcome::Quit),
+            Action::Quit => return Some(Effect::Exit(Outcome::Quit)),
             Action::Open(_) if editor.is_modified() => {
                 editor.set_message("unsaved changes (:w to apply, :q! to discard)");
             }
             Action::Open(id) => {
-                return Some(Outcome::Open(self.buffer.worktrees[id.0].path.clone()));
+                let path = self.buffer.worktrees[id.0].path.clone();
+                return Some(Effect::Exit(Outcome::Open(path)));
             }
+            Action::Tool { key, id } => return self.run_tool(key, id),
             Action::Write { quit } => match plan::plan(&self.buffer.worktrees, editor.lines()) {
                 Ok(operations) if operations.is_empty() => {
                     if quit {
-                        return Some(Outcome::Quit);
+                        return Some(Effect::Exit(Outcome::Quit));
                     }
                     editor.set_message("no changes");
                 }
@@ -173,6 +196,73 @@ impl App {
         }
         None
     }
+}
+
+impl App {
+    fn run_tool(&mut self, key: char, id: EntryId) -> Option<Effect> {
+        let editor = &mut self.buffer.editor;
+        let tools = self.env.config.tools();
+        let Some(tool) = tools.iter().find(|t| t.key == key) else {
+            editor.set_message(format!("no tool on <Space>{key}"));
+            return None;
+        };
+        let worktree = &self.buffer.worktrees[id.0];
+        if worktree.health != Health::Healthy {
+            editor.set_message(format!("{}: the worktree directory is missing", tool.name));
+            return None;
+        }
+        let command = match tool::render(&tool.command, worktree) {
+            Ok(command) => command,
+            Err(err) => {
+                editor.set_message(format!("{}: {err}", tool.name));
+                return None;
+            }
+        };
+        let dir = worktree.path.clone();
+        let result = match tool.mode {
+            ToolMode::Suspend => return Some(Effect::Suspend { command, dir }),
+            ToolMode::Detach => tools::detach(&command, &dir).map(|()| None),
+            ToolMode::HerdrWorkspace => {
+                herdr_workspace(&command, &dir).map(|()| Some(Effect::Exit(Outcome::Quit)))
+            }
+        };
+        match result {
+            Ok(effect) => {
+                editor.set_message(format!("started {}", tool.name));
+                effect
+            }
+            Err(err) => {
+                editor.set_message(format!("{}: {err:#}", tool.name));
+                None
+            }
+        }
+    }
+}
+
+fn herdr_workspace(command: &[String], dir: &Path) -> Result<()> {
+    if std::env::var_os("HERDR_ENV").is_none() {
+        anyhow::bail!("needs to run inside herdr");
+    }
+    let path = dir.to_string_lossy().into_owned();
+    let open = ["herdr", "worktree", "open", "--path", &path, "--focus"].map(String::from);
+    tools::run_captured(&open, dir)?;
+    tools::run_captured(command, dir)
+}
+
+/// Hands the terminal to `command` and takes it back afterwards. The inner result is the
+/// command's own failure; the outer one a terminal failure.
+fn suspend(terminal: &mut DefaultTerminal, command: &[String], dir: &Path) -> Result<Result<()>> {
+    execute!(
+        io::stdout(),
+        LeaveAlternateScreen,
+        SetCursorStyle::DefaultUserShape
+    )?;
+    disable_raw_mode()?;
+    let result = tools::run_attached(command, dir);
+    enable_raw_mode()?;
+    execute!(io::stdout(), EnterAlternateScreen)?;
+    terminal.clear()?;
+    Ok(result)
 }
 
 fn convert(event: KeyEvent) -> Option<Key> {

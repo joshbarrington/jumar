@@ -1,6 +1,7 @@
 use std::sync::Arc;
 use std::sync::mpsc::Receiver;
 
+use jumar_core::config::Tool;
 use jumar_core::editor::{Editor, Entry, Mode};
 use jumar_core::inspect::inspect_all;
 use jumar_core::model::{Health, Worktree};
@@ -24,6 +25,7 @@ pub struct Buffer {
     loading: usize,
     inspections: Receiver<(usize, InspectResult)>,
     scroll: usize,
+    tool_hint: String,
 }
 
 /// Display text for one cell of each column, computed once per frame.
@@ -39,7 +41,7 @@ struct Row<'a> {
 }
 
 impl Buffer {
-    pub fn new(scan: Scan) -> Self {
+    pub fn new(scan: Scan, tools: &[Tool]) -> Self {
         let worktrees: Arc<[Worktree]> = scan.worktrees.into();
         let entries = worktrees
             .iter()
@@ -66,6 +68,11 @@ impl Buffer {
             editor,
             worktrees,
             scroll: 0,
+            tool_hint: tools
+                .iter()
+                .map(|t| format!("{} {}", t.key, t.name))
+                .collect::<Vec<_>>()
+                .join("  "),
         }
     }
 
@@ -224,7 +231,9 @@ impl Buffer {
             Mode::Command => spans.push(Span::raw(format!(":{}", self.editor.prompt()))),
             Mode::Filter => spans.push(Span::raw(format!("/{}", self.editor.filter()))),
             Mode::Normal | Mode::Insert => {
-                if let Some(message) = self.editor.message() {
+                if self.editor.is_leader_pending() {
+                    spans.push(Span::raw(self.tool_hint.clone()).dark_gray());
+                } else if let Some(message) = self.editor.message() {
                     spans.push(Span::raw(message));
                 } else if !self.editor.filter().is_empty() {
                     spans.push(Span::raw(format!("/{}", self.editor.filter())).dark_gray());

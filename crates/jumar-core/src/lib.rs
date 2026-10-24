@@ -8,5 +8,6 @@ pub mod inspect;
 pub mod model;
 pub mod plan;
 pub mod safety;
+pub mod tool;
 
 pub use error::{Error, Result};

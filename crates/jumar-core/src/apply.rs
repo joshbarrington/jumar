@@ -237,13 +237,7 @@ fn create_source<'a>(context: &'a Context, near: Option<EntryId>) -> Result<&'a 
 fn default_base(repo: &Path) -> Result<String> {
     Ok(git::default_branches(repo)?
         .first()
-        .map_or_else(|| "HEAD".to_owned(), |r| short_ref(r).to_owned()))
-}
-
-fn short_ref(name: &str) -> &str {
-    name.strip_prefix("refs/heads/")
-        .or_else(|| name.strip_prefix("refs/remotes/"))
-        .unwrap_or(name)
+        .map_or_else(|| "HEAD".to_owned(), |r| git::short_ref(r).to_owned()))
 }
 
 /// Fills `{repo}`, `{repo_name}` and `{name}`, and expands a leading `~`.
@@ -379,10 +373,5 @@ mod tests {
     #[test]
     fn split_target_should_leave_bare_name_without_repo() {
         assert_eq!(split_target("fix"), (None, "fix"));
-    }
-
-    #[test]
-    fn short_ref_should_strip_remote_prefix() {
-        assert_eq!(short_ref("refs/remotes/origin/main"), "origin/main");
     }
 }

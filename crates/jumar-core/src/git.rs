@@ -103,6 +103,14 @@ pub fn default_branches(repo: &Path) -> Result<Vec<String>> {
     Ok(refs)
 }
 
+/// `main` for `refs/heads/main`, `origin/main` for `refs/remotes/origin/main`.
+#[must_use]
+pub fn short_ref(name: &str) -> &str {
+    name.strip_prefix("refs/heads/")
+        .or_else(|| name.strip_prefix("refs/remotes/"))
+        .unwrap_or(name)
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorktreeEntry {
     pub path: PathBuf,
@@ -234,6 +242,11 @@ fn parse_status_header(header: &str, status: &mut Status) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn short_ref_should_strip_remote_prefix() {
+        assert_eq!(short_ref("refs/remotes/origin/main"), "origin/main");
+    }
 
     mod parse_worktree_list {
         use super::*;

@@ -2,6 +2,7 @@ mod discover;
 mod format;
 mod list;
 mod shell;
+mod tools;
 mod tui;
 
 use clap::{Parser, Subcommand};

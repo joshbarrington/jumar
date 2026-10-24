@@ -31,6 +31,11 @@ pub enum Action {
     },
     Quit,
     Open(EntryId),
+    /// The key pressed after the `<Space>` leader, on an existing worktree.
+    Tool {
+        key: char,
+        id: EntryId,
+    },
     /// An ex command the editor does not handle itself, such as `prune`.
     Command(String),
 }
@@ -50,6 +55,7 @@ enum Pending {
     Delete,
     Change,
     ChangeInner,
+    Leader,
 }
 
 #[derive(Debug, Clone)]
@@ -146,6 +152,12 @@ impl Editor {
         self.message.as_deref()
     }
 
+    /// True after `<Space>`, while the next key picks a tool.
+    #[must_use]
+    pub fn is_leader_pending(&self) -> bool {
+        self.pending == Pending::Leader
+    }
+
     pub fn set_message(&mut self, message: impl Into<String>) {
         self.message = Some(message.into());
     }
@@ -191,6 +203,12 @@ impl Editor {
             (Pending::Change, Key::Char('w')) => self.change_word(),
             (Pending::Change, Key::Char('i')) => self.pending = Pending::ChangeInner,
             (Pending::ChangeInner, Key::Char('w')) => self.change_inner_word(),
+            (Pending::Leader, Key::Char(key)) => {
+                if let Some(Line::Existing { id, .. }) = self.current_row().map(|r| &self.lines[r])
+                {
+                    return Some(Action::Tool { key, id: *id });
+                }
+            }
             _ => {}
         }
         None
@@ -226,6 +244,7 @@ impl Editor {
                 };
                 self.count = count;
             }
+            Key::Char(' ') => self.pending = Pending::Leader,
             Key::Char('x') => self.delete_chars(n),
             Key::Char('o') => self.open_line(true),
             Key::Char('O') => self.open_line(false),
@@ -987,6 +1006,27 @@ mod tests {
             feed(&mut editor(&ABC), "j<CR>"),
             Some(Action::Open(EntryId(1)))
         );
+    }
+
+    #[test]
+    fn leader_should_pick_tool_for_current_worktree() {
+        assert_eq!(
+            feed(&mut editor(&ABC), "j d"),
+            Some(Action::Tool {
+                key: 'd',
+                id: EntryId(1)
+            })
+        );
+    }
+
+    #[test]
+    fn leader_should_ignore_new_line() {
+        assert_eq!(feed(&mut editor(&ABC), "oz<Esc> d"), None);
+    }
+
+    #[test]
+    fn leader_should_consume_the_key_after_it() {
+        assert_eq!(texts_after(&ABC, " dd"), ABC);
     }
 
     #[test]
