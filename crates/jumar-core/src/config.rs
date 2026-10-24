@@ -83,7 +83,10 @@ fn presets() -> Vec<Source> {
     vec![
         Source {
             name: "claude".into(),
-            globs: vec!["~/github/*/.claude/worktrees/*".into()],
+            globs: vec![
+                "~/*/.claude/worktrees/*".into(),
+                "~/github/*/.claude/worktrees/*".into(),
+            ],
         },
         Source {
             name: "herdr".into(),
