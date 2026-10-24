@@ -1,5 +1,7 @@
 mod discover;
+mod format;
 mod list;
+mod tui;
 
 use clap::{Parser, Subcommand};
 
@@ -22,11 +24,13 @@ enum Command {
 }
 
 fn main() -> anyhow::Result<()> {
-    // Until the TUI lands, a bare `jumar` lists.
-    match Cli::parse()
-        .command
-        .unwrap_or(Command::List { json: false })
-    {
-        Command::List { json } => list::run(json),
+    match Cli::parse().command {
+        Some(Command::List { json }) => list::run(json),
+        None => {
+            if let tui::Outcome::Open(path) = tui::run()? {
+                println!("{}", path.display());
+            }
+            Ok(())
+        }
     }
 }

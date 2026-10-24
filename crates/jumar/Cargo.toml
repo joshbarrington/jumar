@@ -10,6 +10,7 @@ license.workspace = true
 anyhow.workspace = true
 clap.workspace = true
 jumar-core.workspace = true
+ratatui.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 

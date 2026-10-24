@@ -3,6 +3,8 @@ use jumar_core::config::{self, Config};
 use jumar_core::discovery::{repos, scan_repo, scan_sources};
 use jumar_core::model::Worktree;
 
+pub const WORKERS: usize = 8;
+
 /// Source matches first, then the "other" group. Repos that fail to list are reported on
 /// stderr and skipped rather than failing the whole scan.
 pub fn worktrees() -> Result<Vec<Worktree>> {
