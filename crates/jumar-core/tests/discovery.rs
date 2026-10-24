@@ -1,33 +1,16 @@
 #![expect(clippy::unwrap_used, reason = "fixture setup should panic on failure")]
 
+mod common;
+
 use std::fs;
-use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::path::PathBuf;
 
 use jumar_core::config::Source;
 use jumar_core::discovery::{repos, scan_repo, scan_sources};
 use jumar_core::model::{Head, Health, Worktree};
 use tempfile::TempDir;
 
-fn git(dir: &Path, args: &[&str]) {
-    let status = Command::new("git")
-        .arg("-C")
-        .arg(dir)
-        .args([
-            "-c",
-            "user.name=t",
-            "-c",
-            "user.email=t@t",
-            "-c",
-            "init.defaultBranch=main",
-        ])
-        .args(args)
-        .env("GIT_CONFIG_GLOBAL", "/dev/null")
-        .env("GIT_CONFIG_NOSYSTEM", "1")
-        .status()
-        .unwrap();
-    assert!(status.success(), "git {args:?} failed");
-}
+use common::{git, init_repo};
 
 struct Fixture {
     home: TempDir,
@@ -38,9 +21,7 @@ impl Fixture {
     fn new() -> Self {
         let home = tempfile::tempdir().unwrap();
         let repo = home.path().join("github/app");
-        fs::create_dir_all(&repo).unwrap();
-        git(&repo, &["init", "-q"]);
-        git(&repo, &["commit", "-q", "--allow-empty", "-m", "init"]);
+        init_repo(&repo);
         git(
             &repo,
             &[

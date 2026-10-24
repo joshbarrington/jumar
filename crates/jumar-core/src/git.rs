@@ -2,7 +2,7 @@
 // and fsmonitor exactly as `git` itself would.
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Output};
 
 use crate::model::Head;
 use crate::{Error, Result};
@@ -13,20 +13,78 @@ use crate::{Error, Result};
 ///
 /// Fails when git cannot start, exits unsuccessfully, or prints non-UTF-8.
 pub fn run(dir: &Path, args: &[&str]) -> Result<String> {
-    let output = Command::new("git")
+    let output = spawn(dir, args)?;
+    if !output.status.success() {
+        return Err(failure(dir, args, &output));
+    }
+    String::from_utf8(output.stdout).map_err(|_| Error::GitParse("non-UTF-8 output".into()))
+}
+
+fn spawn(dir: &Path, args: &[&str]) -> Result<Output> {
+    Command::new("git")
         .arg("-C")
         .arg(dir)
         .args(args)
         .output()
-        .map_err(Error::GitSpawn)?;
-    if !output.status.success() {
-        return Err(Error::Git {
-            dir: dir.to_path_buf(),
-            args: args.join(" "),
-            stderr: String::from_utf8_lossy(&output.stderr).trim().to_owned(),
-        });
+        .map_err(Error::GitSpawn)
+}
+
+fn failure(dir: &Path, args: &[&str], output: &Output) -> Error {
+    Error::Git {
+        dir: dir.to_path_buf(),
+        args: args.join(" "),
+        stderr: String::from_utf8_lossy(&output.stderr).trim().to_owned(),
     }
-    String::from_utf8(output.stdout).map_err(|_| Error::GitParse("non-UTF-8 output".into()))
+}
+
+/// For commands that answer yes/no with exit status 0/1.
+fn yes_no(dir: &Path, args: &[&str]) -> Result<bool> {
+    let output = spawn(dir, args)?;
+    match output.status.code() {
+        Some(0) => Ok(true),
+        Some(1) => Ok(false),
+        _ => Err(failure(dir, args, &output)),
+    }
+}
+
+/// # Errors
+///
+/// Fails when either revision does not exist.
+pub fn is_ancestor(dir: &Path, ancestor: &str, descendant: &str) -> Result<bool> {
+    yes_no(dir, &["merge-base", "--is-ancestor", ancestor, descendant])
+}
+
+/// The repo's default branch as remote-tracking and local refs, whichever exist:
+/// e.g. `["refs/remotes/origin/main", "refs/heads/main"]`. Without `origin/HEAD`, falls
+/// back to a local `main` or `master`.
+///
+/// # Errors
+///
+/// Fails when git fails.
+pub fn default_branches(repo: &Path) -> Result<Vec<String>> {
+    let remote_head = spawn(
+        repo,
+        &["symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"],
+    )?;
+    let mut refs = Vec::new();
+    let local_names = if remote_head.status.success() {
+        let target = String::from_utf8_lossy(&remote_head.stdout)
+            .trim()
+            .to_owned();
+        let name = target.trim_start_matches("refs/remotes/origin/").to_owned();
+        refs.push(target);
+        vec![name]
+    } else {
+        vec!["main".to_owned(), "master".to_owned()]
+    };
+    for name in local_names {
+        let local = format!("refs/heads/{name}");
+        if yes_no(repo, &["show-ref", "--verify", "--quiet", &local])? {
+            refs.push(local);
+            break;
+        }
+    }
+    Ok(refs)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
