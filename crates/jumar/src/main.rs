@@ -1,6 +1,7 @@
 mod discover;
 mod format;
 mod list;
+mod shell;
 mod tui;
 
 use clap::{Parser, Subcommand};
@@ -21,14 +22,20 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Print a shell function that runs jumar and cds into the worktree you open.
+    Init { shell: shell::Shell },
 }
 
 fn main() -> anyhow::Result<()> {
     match Cli::parse().command {
         Some(Command::List { json }) => list::run(json),
+        Some(Command::Init { shell }) => {
+            print!("{}", shell::init_script(shell));
+            Ok(())
+        }
         None => {
             if let tui::Outcome::Open(path) = tui::run()? {
-                println!("{}", path.display());
+                shell::hand_off(&path)?;
             }
             Ok(())
         }
