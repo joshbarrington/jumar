@@ -146,7 +146,7 @@ fn parse_worktree_block(block: &str) -> Result<WorktreeEntry> {
     })
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize)]
 pub struct Status {
     pub branch: Option<String>,
     pub upstream: Option<String>,

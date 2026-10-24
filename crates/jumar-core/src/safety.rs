@@ -1,9 +1,10 @@
 use crate::Result;
 use crate::git::{self, Status};
-use crate::model::{Head, Health, Worktree};
+use crate::model::{Head, Worktree};
 
 /// How much would be lost by removing a worktree.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Tier {
     /// Clean, and the branch is merged or fully pushed: remove checkout and branch.
     Safe,
@@ -31,10 +32,12 @@ pub fn classify(status: &Status, merged: bool) -> Tier {
     }
 }
 
+/// `status` is the worktree's current status; use the default for one without a checkout.
+///
 /// # Errors
 ///
 /// Fails when git fails.
-pub fn assess(worktree: &Worktree) -> Result<Tier> {
+pub fn assess(worktree: &Worktree, status: &Status) -> Result<Tier> {
     let defaults = git::default_branches(&worktree.repo)?;
     let revision = match &worktree.head {
         Some(Head::Branch(name)) => {
@@ -48,10 +51,6 @@ pub fn assess(worktree: &Worktree) -> Result<Tier> {
         Some(Head::Detached(oid)) => oid.clone(),
         None => return Ok(Tier::Unmerged),
     };
-    let status = match worktree.health {
-        Health::Healthy => git::status(&worktree.path)?,
-        Health::Prunable | Health::Orphaned => Status::default(),
-    };
     let mut merged = false;
     for default in &defaults {
         if git::is_ancestor(&worktree.repo, &revision, default)? {
@@ -59,7 +58,7 @@ pub fn assess(worktree: &Worktree) -> Result<Tier> {
             break;
         }
     }
-    Ok(classify(&status, merged))
+    Ok(classify(status, merged))
 }
 
 #[cfg(test)]

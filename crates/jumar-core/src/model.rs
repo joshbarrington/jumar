@@ -1,13 +1,17 @@
 use std::path::PathBuf;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+use serde::Serialize;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Head {
     /// Short name: `feature/x`, not `refs/heads/feature/x`.
     Branch(String),
     Detached(String),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Health {
     Healthy,
     /// Git has metadata but the directory is gone; `git worktree prune` cleans it up.
@@ -16,7 +20,7 @@ pub enum Health {
     Orphaned,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Worktree {
     pub path: PathBuf,
     /// Where git commands run: the main checkout, or the git dir of a bare repo.
