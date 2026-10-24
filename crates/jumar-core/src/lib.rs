@@ -1,2 +1,7 @@
-//! Core library for jumar: worktree discovery, git status, the buffer-edit planner and
-//! removal safety checks. It has no terminal dependencies, so all of it is unit-testable.
+pub mod config;
+pub mod discovery;
+mod error;
+pub mod git;
+pub mod model;
+
+pub use error::{Error, Result};
