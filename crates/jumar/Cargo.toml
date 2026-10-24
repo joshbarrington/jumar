@@ -1,0 +1,14 @@
+[package]
+name = "jumar"
+description = "An oil.nvim-style editable buffer for managing git worktrees."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+clap.workspace = true
+jumar-core.workspace = true
+
+[lints]
+workspace = true
