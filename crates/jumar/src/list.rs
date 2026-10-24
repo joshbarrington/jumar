@@ -19,7 +19,11 @@ struct Entry<'a> {
 }
 
 pub fn run(json: bool) -> Result<()> {
-    let worktrees: Arc<[Worktree]> = discover::worktrees()?.into();
+    let scan = discover::scan(&discover::Env::load()?)?;
+    for warning in &scan.warnings {
+        eprintln!("jumar: {warning}");
+    }
+    let worktrees: Arc<[Worktree]> = scan.worktrees.into();
     let mut results: Vec<Option<InspectResult>> = std::iter::repeat_with(|| None)
         .take(worktrees.len())
         .collect();

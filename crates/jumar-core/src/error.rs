@@ -31,6 +31,8 @@ pub enum Error {
     },
     #[error("unexpected git output: {0}")]
     GitParse(String),
+    #[error("path is not valid UTF-8: {}", .0.display())]
+    NonUtf8Path(PathBuf),
 }
 
 pub type Result<T, E = Error> = std::result::Result<T, E>;

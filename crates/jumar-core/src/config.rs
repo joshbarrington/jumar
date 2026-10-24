@@ -1,9 +1,14 @@
 //! ```toml
+//! default_create_source = "work"
+//!
 //! [[source]]
 //! name = "work"
 //! globs = ["~/work/*/.worktrees/*"]
+//! # {repo} is the main checkout's path, {repo_name} its directory name.
+//! create_path = "{repo}/.worktrees/{name}"
 //!
-//! # Same name as a preset: replaces it. Empty globs disable it.
+//! # Same name as a preset: replaces its globs (empty disables it), and its
+//! # create_path when given.
 //! [[source]]
 //! name = "claude"
 //! globs = ["~/code/*/.claude/worktrees/*"]
@@ -21,6 +26,8 @@ pub struct Source {
     pub name: String,
     #[serde(default)]
     pub globs: Vec<String>,
+    /// Where new worktrees go. Without one, the source cannot create worktrees.
+    pub create_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
@@ -28,6 +35,7 @@ pub struct Source {
 pub struct Config {
     #[serde(default, rename = "source")]
     user_sources: Vec<Source>,
+    default_create_source: Option<String>,
 }
 
 impl Config {
@@ -63,11 +71,21 @@ impl Config {
         let mut sources = presets();
         for user in &self.user_sources {
             match sources.iter_mut().find(|s| s.name == user.name) {
-                Some(preset) => preset.globs.clone_from(&user.globs),
+                Some(preset) => {
+                    preset.globs.clone_from(&user.globs);
+                    if user.create_path.is_some() {
+                        preset.create_path.clone_from(&user.create_path);
+                    }
+                }
                 None => sources.push(user.clone()),
             }
         }
         sources
+    }
+
+    #[must_use]
+    pub fn default_create_source(&self) -> &str {
+        self.default_create_source.as_deref().unwrap_or("claude")
     }
 }
 
@@ -87,10 +105,12 @@ fn presets() -> Vec<Source> {
                 "~/*/.claude/worktrees/*".into(),
                 "~/github/*/.claude/worktrees/*".into(),
             ],
+            create_path: Some("{repo}/.claude/worktrees/{name}".into()),
         },
         Source {
             name: "herdr".into(),
             globs: vec!["~/.herdr/worktrees/*/*".into()],
+            create_path: None,
         },
     ]
 }
@@ -124,6 +144,28 @@ mod tests {
         let config = parse("[[source]]\nname = \"claude\"\nglobs = [\"~/code/*/x/*\"]\n");
 
         assert_eq!(config.sources()[0].globs, ["~/code/*/x/*"]);
+    }
+
+    #[test]
+    fn sources_should_keep_preset_create_path_when_user_omits_it() {
+        let config = parse("[[source]]\nname = \"claude\"\nglobs = [\"~/c/*\"]\n");
+
+        assert!(config.sources()[0].create_path.is_some());
+    }
+
+    #[test]
+    fn sources_should_replace_preset_create_path_when_given() {
+        let config = parse("[[source]]\nname = \"claude\"\ncreate_path = \"~/w/{name}\"\n");
+
+        assert_eq!(
+            config.sources()[0].create_path.as_deref(),
+            Some("~/w/{name}")
+        );
+    }
+
+    #[test]
+    fn default_create_source_should_be_claude_when_unset() {
+        assert_eq!(parse("").default_create_source(), "claude");
     }
 
     #[test]

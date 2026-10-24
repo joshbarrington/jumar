@@ -30,6 +30,9 @@ pub enum Operation {
     Create {
         target: String,
         base: Option<String>,
+        /// The closest existing line above (or else below), whose repo and source a
+        /// bare `name` inherits.
+        near: Option<EntryId>,
     },
 }
 
@@ -60,8 +63,12 @@ pub fn plan(original: &[Worktree], lines: &[Line]) -> Result<Vec<Operation>, Vec
     let mut seen = HashSet::new();
     let mut moves = Vec::new();
     let mut creates = Vec::new();
+    let mut near = lines.iter().find_map(|line| existing_id(original, line));
 
     for (index, line) in lines.iter().enumerate() {
+        if let Some(id) = existing_id(original, line) {
+            near = Some(id);
+        }
         let line_no = index + 1;
         match line {
             Line::Existing { id, name } => {
@@ -103,6 +110,7 @@ pub fn plan(original: &[Worktree], lines: &[Line]) -> Result<Vec<Operation>, Vec
                     creates.push(Operation::Create {
                         target: target.to_owned(),
                         base,
+                        near,
                     });
                 }
             }
@@ -156,6 +164,13 @@ impl PlanError {
             | Self::Collision { line, .. }
             | Self::MissingTarget { line } => *line,
         }
+    }
+}
+
+fn existing_id(original: &[Worktree], line: &Line) -> Option<EntryId> {
+    match line {
+        Line::Existing { id, .. } if id.0 < original.len() => Some(*id),
+        _ => None,
     }
 }
 
@@ -251,8 +266,46 @@ mod tests {
         let expected = Operation::Create {
             target: "app/fix".into(),
             base: None,
+            near: Some(EntryId(1)),
         };
         assert_eq!(ops, [expected]);
+    }
+
+    #[test]
+    fn plan_should_take_context_from_line_above_new_line() {
+        let lines = [keep(0, "a"), Line::New("x".into()), keep(1, "b")];
+
+        let ops = plan(&original(), &lines).unwrap();
+
+        assert!(matches!(
+            &ops[0],
+            Operation::Create {
+                near: Some(EntryId(0)),
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn plan_should_take_context_from_line_below_when_new_line_is_first() {
+        let lines = [Line::New("x".into()), keep(1, "b"), keep(0, "a")];
+
+        let ops = plan(&original(), &lines).unwrap();
+
+        assert!(matches!(
+            &ops[0],
+            Operation::Create {
+                near: Some(EntryId(1)),
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn plan_should_have_no_context_when_buffer_has_no_existing_lines() {
+        let ops = plan(&[], &[Line::New("x".into())]).unwrap();
+
+        assert!(matches!(&ops[0], Operation::Create { near: None, .. }));
     }
 
     #[test]

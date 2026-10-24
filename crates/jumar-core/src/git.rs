@@ -54,6 +54,23 @@ pub fn is_ancestor(dir: &Path, ancestor: &str, descendant: &str) -> Result<bool>
     yes_no(dir, &["merge-base", "--is-ancestor", ancestor, descendant])
 }
 
+/// # Errors
+///
+/// Fails when git fails.
+pub fn branch_exists(repo: &Path, name: &str) -> Result<bool> {
+    let local = format!("refs/heads/{name}");
+    yes_no(repo, &["show-ref", "--verify", "--quiet", &local])
+}
+
+/// # Errors
+///
+/// Fails when git cannot start.
+pub fn is_valid_branch_name(repo: &Path, name: &str) -> Result<bool> {
+    Ok(spawn(repo, &["check-ref-format", "--branch", name])?
+        .status
+        .success())
+}
+
 /// The repo's default branch as remote-tracking and local refs, whichever exist:
 /// e.g. `["refs/remotes/origin/main", "refs/heads/main"]`. Without `origin/HEAD`, falls
 /// back to a local `main` or `master`.
@@ -78,9 +95,8 @@ pub fn default_branches(repo: &Path) -> Result<Vec<String>> {
         vec!["main".to_owned(), "master".to_owned()]
     };
     for name in local_names {
-        let local = format!("refs/heads/{name}");
-        if yes_no(repo, &["show-ref", "--verify", "--quiet", &local])? {
-            refs.push(local);
+        if branch_exists(repo, &name)? {
+            refs.push(format!("refs/heads/{name}"));
             break;
         }
     }

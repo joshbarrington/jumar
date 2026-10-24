@@ -1,47 +1,28 @@
-use std::io;
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::mpsc::Receiver;
-use std::time::Duration;
 
-use anyhow::Result;
-use jumar_core::editor::{Action, Editor, Entry, Key, Mode};
+use jumar_core::editor::{Editor, Entry, Mode};
 use jumar_core::inspect::inspect_all;
 use jumar_core::model::{Health, Worktree};
-use jumar_core::plan::{self, Line as BufferLine};
-use ratatui::crossterm::cursor::SetCursorStyle;
-use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
-use ratatui::crossterm::execute;
+use jumar_core::plan::Line as BufferLine;
+use jumar_core::safety::Tier;
+use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
-use ratatui::{DefaultTerminal, Frame};
 
-use crate::discover;
+use super::{column_width, mode_tag, pad, to_u16, width};
+use crate::discover::{self, Scan};
 use crate::format::{self, InspectResult};
 
-pub enum Outcome {
-    Quit,
-    Open(PathBuf),
-}
-
-pub fn run() -> Result<Outcome> {
-    let worktrees: Arc<[Worktree]> = discover::worktrees()?.into();
-    let mut app = App::new(worktrees);
-    let mut terminal = ratatui::try_init()?;
-    let outcome = app.run(&mut terminal);
-    ratatui::restore();
-    execute!(io::stdout(), SetCursorStyle::DefaultUserShape)?;
-    outcome
-}
-
-struct App {
-    worktrees: Arc<[Worktree]>,
+/// The editable worktree list, with inspection results filling in as they arrive.
+pub struct Buffer {
+    pub worktrees: Arc<[Worktree]>,
+    pub editor: Editor,
     results: Vec<Option<InspectResult>>,
     loading: usize,
     inspections: Receiver<(usize, InspectResult)>,
-    editor: Editor,
     scroll: usize,
 }
 
@@ -57,8 +38,9 @@ struct Row<'a> {
     state_style: Style,
 }
 
-impl App {
-    fn new(worktrees: Arc<[Worktree]>) -> Self {
+impl Buffer {
+    pub fn new(scan: Scan) -> Self {
+        let worktrees: Arc<[Worktree]> = scan.worktrees.into();
         let entries = worktrees
             .iter()
             .map(|w| Entry {
@@ -71,91 +53,39 @@ impl App {
                 ),
             })
             .collect();
+        let mut editor = Editor::new(entries);
+        if let Some(warning) = scan.warnings.first() {
+            editor.set_message(warning.clone());
+        }
         Self {
             results: std::iter::repeat_with(|| None)
                 .take(worktrees.len())
                 .collect(),
             loading: worktrees.len(),
             inspections: inspect_all(&worktrees, discover::WORKERS),
-            editor: Editor::new(entries),
+            editor,
             worktrees,
             scroll: 0,
         }
     }
 
-    fn run(&mut self, terminal: &mut DefaultTerminal) -> Result<Outcome> {
-        let mut mode = None;
-        loop {
-            self.receive();
-            if mode != Some(self.editor.mode()) {
-                mode = Some(self.editor.mode());
-                let shape = match self.editor.mode() {
-                    Mode::Normal => SetCursorStyle::SteadyBlock,
-                    Mode::Insert | Mode::Command | Mode::Filter => SetCursorStyle::SteadyBar,
-                };
-                execute!(io::stdout(), shape)?;
-            }
-            terminal.draw(|frame| self.render(frame))?;
-
-            let timeout = if self.loading > 0 {
-                Duration::from_millis(30)
-            } else {
-                Duration::from_secs(60)
-            };
-            if !event::poll(timeout)? {
-                continue;
-            }
-            if let Event::Key(key) = event::read()?
-                && key.kind == KeyEventKind::Press
-                && let Some(key) = convert(key)
-                && let Some(action) = self.editor.handle(key)
-                && let Some(outcome) = self.act(action)
-            {
-                return Ok(outcome);
-            }
-        }
+    pub fn is_loading(&self) -> bool {
+        self.loading > 0
     }
 
-    fn receive(&mut self) {
+    pub fn receive(&mut self) {
         for (index, result) in self.inspections.try_iter() {
             self.results[index] = Some(result);
             self.loading -= 1;
         }
     }
 
-    fn act(&mut self, action: Action) -> Option<Outcome> {
-        match action {
-            Action::Quit => return Some(Outcome::Quit),
-            Action::Open(_) if self.editor.is_modified() => {
-                self.editor
-                    .set_message("unsaved changes (:w to apply, :q! to discard)");
-            }
-            Action::Open(id) => return Some(Outcome::Open(self.worktrees[id.0].path.clone())),
-            Action::Write { quit } => match plan::plan(&self.worktrees, self.editor.lines()) {
-                Ok(operations) if operations.is_empty() => {
-                    if quit {
-                        return Some(Outcome::Quit);
-                    }
-                    self.editor.set_message("no changes");
-                }
-                Ok(operations) => self.editor.set_message(format!(
-                    "{} change(s) planned; applying is not implemented yet",
-                    operations.len()
-                )),
-                Err(errors) => {
-                    let more = match errors.len() {
-                        1 => String::new(),
-                        n => format!(" (+{} more)", n - 1),
-                    };
-                    self.editor.set_message(format!("{}{more}", errors[0]));
-                }
-            },
-            Action::Command(command) => {
-                self.editor
-                    .set_message(format!("not an editor command: {command}"));
-            }
-        }
-        None
+    /// Tiers known so far, by entry.
+    pub fn tiers(&self) -> Vec<Option<Tier>> {
+        self.results
+            .iter()
+            .map(|r| r.as_ref().and_then(|r| r.as_ref().ok()).map(|i| i.tier))
+            .collect()
     }
 
     fn rows(&self) -> Vec<Row<'_>> {
@@ -201,7 +131,7 @@ impl App {
             .collect()
     }
 
-    fn render(&mut self, frame: &mut Frame) {
+    pub fn render(&mut self, frame: &mut Frame) {
         let [list, status] =
             Layout::vertical([Constraint::Fill(1), Constraint::Length(1)]).areas(frame.area());
         let (row, col) = self.editor.cursor();
@@ -289,13 +219,7 @@ impl App {
             Mode::Command => ("COMMAND", Color::Yellow),
             Mode::Filter => ("FILTER", Color::Magenta),
         };
-        let mut spans = vec![
-            Span::raw(format!(" {tag} "))
-                .fg(Color::Black)
-                .bg(color)
-                .bold(),
-            Span::raw(" "),
-        ];
+        let mut spans = vec![mode_tag(tag, color), Span::raw(" ")];
         match self.editor.mode() {
             Mode::Command => spans.push(Span::raw(format!(":{}", self.editor.prompt()))),
             Mode::Filter => spans.push(Span::raw(format!("/{}", self.editor.filter()))),
@@ -323,53 +247,5 @@ impl App {
             .dark_gray()
             .right_aligned();
         frame.render_widget(summary, status);
-    }
-}
-
-fn convert(event: KeyEvent) -> Option<Key> {
-    Some(match event.code {
-        KeyCode::Char(c) if event.modifiers.contains(KeyModifiers::CONTROL) => Key::Ctrl(c),
-        KeyCode::Char(c) => Key::Char(c),
-        KeyCode::Esc => Key::Esc,
-        KeyCode::Enter => Key::Enter,
-        KeyCode::Backspace => Key::Backspace,
-        KeyCode::Left => Key::Left,
-        KeyCode::Right => Key::Right,
-        KeyCode::Up => Key::Up,
-        KeyCode::Down => Key::Down,
-        _ => return None,
-    })
-}
-
-fn width(text: &str) -> usize {
-    Span::raw(text).width()
-}
-
-fn column_width<'a>(cells: impl Iterator<Item = &'a str>) -> usize {
-    cells.map(width).max().unwrap_or(0)
-}
-
-fn pad(text: &str, to: usize) -> String {
-    format!("{text}{}", " ".repeat(to.saturating_sub(width(text))))
-}
-
-fn to_u16(n: usize) -> u16 {
-    u16::try_from(n).unwrap_or(u16::MAX)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn pad_should_use_display_width() {
-        assert_eq!(pad("🟢", 3), "🟢 ");
-    }
-
-    #[test]
-    fn convert_should_map_control_chars() {
-        let event = KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL);
-
-        assert_eq!(convert(event), Some(Key::Ctrl('r')));
     }
 }

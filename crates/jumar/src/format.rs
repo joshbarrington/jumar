@@ -12,11 +12,15 @@ pub fn tier_mark(result: Option<&InspectResult>) -> &'static str {
     match result {
         None => "· ",
         Some(Err(_)) => "⚠️",
-        Some(Ok(inspection)) => match inspection.tier {
-            Tier::Safe => "🟢",
-            Tier::Unmerged => "🟡",
-            Tier::Dirty => "🔴",
-        },
+        Some(Ok(inspection)) => tier_emoji(inspection.tier),
+    }
+}
+
+pub fn tier_emoji(tier: Tier) -> &'static str {
+    match tier {
+        Tier::Safe => "🟢",
+        Tier::Unmerged => "🟡",
+        Tier::Dirty => "🔴",
     }
 }
 
