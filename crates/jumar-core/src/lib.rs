@@ -1,5 +1,6 @@
 pub mod config;
 pub mod discovery;
+pub mod editor;
 mod error;
 pub mod git;
 pub mod inspect;
