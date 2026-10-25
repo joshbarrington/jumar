@@ -152,3 +152,21 @@ fn inspect_should_be_unmerged_when_upstream_deleted_with_local_commits() {
 
     assert_eq!(inspection.tier, Tier::Unmerged);
 }
+
+#[test]
+fn inspect_should_read_the_last_commit_time() {
+    let fx = Fixture::new();
+    let worktree = fx.add("feat");
+    let status = std::process::Command::new("git")
+        .arg("-C")
+        .arg(&worktree.path)
+        .args(["-c", "user.name=t", "-c", "user.email=t@t"])
+        .args(["commit", "-q", "--allow-empty", "-m", "dated"])
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_COMMITTER_DATE", "@1700000000 +0000")
+        .status()
+        .unwrap();
+    assert!(status.success());
+
+    assert_eq!(inspect(&worktree).unwrap().last_commit, Some(1_700_000_000));
+}

@@ -9,13 +9,13 @@ Manage git worktrees from an editable, vim-style buffer, in the spirit of
 name to rename it, add a line to create one, then `:w` to review and apply.
 
 ```
-    NAME          BRANCH       STATUS        SOURCE   HERDR
+    NAME          BRANCH       STATUS          AGE   SOURCE   HERDR
  app  ~/github/app
-    (main)        main         clean
- ✓  fix-login     fix-login    clean         claude
- ↑  search        search       ↑2            claude   ● working
- !  new-api       new-api      3 changed     herdr    ▲ blocked
- ↑  old-spike     old-spike    upstream gone claude
+    (main)        main         clean           2h
+ ✓  fix-login     fix-login    clean           3d    claude
+ ↑  search        search       ↑2              5h    claude   ● working
+ !  new-api       new-api      3 changed       20m   herdr    ▲ blocked
+ ↑  old-spike     old-spike    upstream gone   2mo   claude
 ```
 
 jumar finds Claude Code and herdr worktrees out of the box, plus every other worktree of the
@@ -88,6 +88,7 @@ runs.
 | `/` | filter by name, repo, source or branch |
 | `dd` | remove the worktree |
 | `v` `V` | select lines, then `d` to remove them all (`o` jumps to the other end) |
+| `:clean` | remove every safe (green) worktree shown; filter first to narrow it |
 | `cw` `ciw` `x` `i` `a` `A` `I` | rename it |
 | `o` `O` | create one: `name`, `repo/name`, `name@base`, or `#123` for a PR |
 | `u` `Ctrl-r` | undo, redo |
@@ -109,6 +110,10 @@ Each worktree is graded by what removing it would lose:
 | green check | clean, and merged or fully pushed | removes the checkout and its branch |
 | yellow arrow | clean, but with commits found nowhere else | keeps the branch |
 | red mark | uncommitted or untracked changes | needs force, and lists what would be lost |
+
+AGE is the time since the worktree's last commit, in yellow after 30 days. To clear out old
+work, `:clean` deletes every green line the filter shows, so `/app` then `:clean` cleans one
+repo. Nothing runs until `:w`, and `u` brings the lines back.
 
 A branch whose remote branch was deleted shows "upstream gone". That usually means its PR
 was merged, but jumar can't be sure, so it stays yellow and keeps the branch.
@@ -235,8 +240,8 @@ placeholder fails to load with an error naming the tool.
 ## Scripting
 
 `jumar list` prints the worktrees as a table, and `jumar list --json` as JSON. Each entry has
-`path`, `repo`, `source`, `head`, `health`, `tier` (`safe`, `unmerged` or `dirty`) and
-`status`, which holds `branch`, `upstream`, `upstream_gone`, `ahead`, `behind`, `changed`,
+`path`, `repo`, `source`, `head`, `health`, `tier` (`safe`, `unmerged` or `dirty`),
+`last_commit` (Unix seconds) and `status`, which holds `branch`, `upstream`, `upstream_gone`, `ahead`, `behind`, `changed`,
 `untracked` and `conflicted`. Repos' own checkouts are left out.
 
 ## Contributing

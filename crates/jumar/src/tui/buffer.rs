@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver};
 use std::thread;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use jumar_core::config::Tool;
 use jumar_core::editor::{Editor, Entry, Mode};
@@ -45,6 +46,7 @@ struct Row<'a> {
     name: &'a str,
     branch: String,
     state: String,
+    age: Span<'static>,
     source: &'a str,
     herdr: Span<'static>,
     style: Style,
@@ -58,7 +60,9 @@ enum Display<'a> {
     Row(usize),
 }
 
-const HEADERS: [&str; 5] = ["NAME", "BRANCH", "STATUS", "SOURCE", "HERDR"];
+const HEADERS: [&str; 6] = ["NAME", "BRANCH", "STATUS", "AGE", "SOURCE", "HERDR"];
+/// Worktrees whose last commit is older than this show their age in yellow.
+const STALE_SECONDS: i64 = 30 * 24 * 60 * 60;
 const GAP: &str = "   ";
 /// Rows sit under their group's title; the mark column comes first.
 const INDENT: &str = "  ";
@@ -148,6 +152,19 @@ impl Buffer {
         format::state(&self.worktrees[id.0], self.results[id.0].as_ref())
     }
 
+    /// Removable worktrees known to lose nothing, and how many are still being checked.
+    pub fn safe_entries(&self) -> (HashSet<EntryId>, usize) {
+        let safe = self
+            .results
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| !self.worktrees[*index].main)
+            .filter(|(_, r)| matches!(r, Some(Ok(i)) if i.tier == Tier::Safe))
+            .map(|(index, _)| EntryId(index))
+            .collect();
+        (safe, self.loading)
+    }
+
     /// Tiers known so far, by entry.
     pub fn tiers(&self) -> Vec<Option<Tier>> {
         self.results
@@ -157,6 +174,9 @@ impl Buffer {
     }
 
     fn rows(&self) -> Vec<Row<'_>> {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX));
         self.editor
             .rows()
             .map(|(_, line)| match line {
@@ -174,6 +194,7 @@ impl Buffer {
                         name,
                         branch: format::branch(worktree.head.as_ref()),
                         state: format::state(worktree, result),
+                        age: age(result, now),
                         source: format::source(worktree),
                         herdr: self.herdr_marker(worktree),
                         style: if renamed {
@@ -195,6 +216,7 @@ impl Buffer {
                     name: text,
                     branch: String::new(),
                     state: String::new(),
+                    age: Span::raw(""),
                     source: "",
                     herdr: Span::raw(""),
                     style: Style::new().fg(theme::GREEN),
@@ -242,12 +264,7 @@ impl Buffer {
         .areas(area);
         let status = super::footer_area(status);
         let rows = self.rows();
-        let widths = [
-            column_width(rows.iter().map(|r| r.name).chain([HEADERS[0]])),
-            column_width(rows.iter().map(|r| r.branch.as_str()).chain([HEADERS[1]])),
-            column_width(rows.iter().map(|r| r.state.as_str()).chain([HEADERS[2]])),
-            column_width(rows.iter().map(|r| r.source).chain([HEADERS[3]])),
-        ];
+        let widths = column_widths(&rows);
         let display = group(&rows);
         let (row, col) = self.editor.cursor();
         let cursor_pos = self.editor.rows().position(|(index, _)| index == row);
@@ -429,11 +446,45 @@ fn group<'a>(rows: &[Row<'a>]) -> Vec<Display<'a>> {
     display
 }
 
-fn row_line(row: &Row, widths: [usize; 4]) -> Line<'static> {
+/// The width of each column but the last, which is left unpadded.
+fn column_widths(rows: &[Row]) -> [usize; 5] {
+    [
+        column_width(rows.iter().map(|r| r.name).chain([HEADERS[0]])),
+        column_width(rows.iter().map(|r| r.branch.as_str()).chain([HEADERS[1]])),
+        column_width(rows.iter().map(|r| r.state.as_str()).chain([HEADERS[2]])),
+        column_width(
+            rows.iter()
+                .map(|r| r.age.content.as_ref())
+                .chain([HEADERS[3]]),
+        ),
+        column_width(rows.iter().map(|r| r.source).chain([HEADERS[4]])),
+    ]
+}
+
+fn age(result: Option<&InspectResult>, now: i64) -> Span<'static> {
+    match result
+        .and_then(|r| r.as_ref().ok())
+        .and_then(|i| i.last_commit)
+    {
+        Some(at) => {
+            let seconds = (now - at).max(0);
+            let color = if seconds >= STALE_SECONDS {
+                theme::YELLOW
+            } else {
+                theme::GRAY
+            };
+            Span::raw(format::age(seconds)).fg(color)
+        }
+        None => Span::raw(""),
+    }
+}
+
+fn row_line(row: &Row, widths: [usize; 5]) -> Line<'static> {
     let cells = [
         (row.name.to_owned(), row.style.add_modifier(Modifier::BOLD)),
         (row.branch.clone(), Style::new().fg(theme::TAN)),
         (row.state.clone(), row.state_style),
+        (row.age.content.to_string(), row.age.style),
         (row.source.to_owned(), Style::new().fg(theme::GRAY)),
         (row.herdr.content.to_string(), row.herdr.style),
     ];
@@ -443,8 +494,8 @@ fn row_line(row: &Row, widths: [usize; 4]) -> Line<'static> {
 /// The last column is left unpadded. Without a mark, the first cell starts in its slot.
 fn columns(
     mark: Option<&Span<'static>>,
-    cells: [(String, Style); 5],
-    widths: [usize; 4],
+    cells: [(String, Style); 6],
+    widths: [usize; 5],
 ) -> Line<'static> {
     let mut spans = vec![Span::raw(INDENT)];
     if let Some(mark) = mark {

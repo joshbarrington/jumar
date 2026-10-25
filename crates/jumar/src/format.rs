@@ -55,6 +55,25 @@ pub fn branch(head: Option<&Head>) -> String {
     }
 }
 
+/// How long ago, in one unit: `now`, `5m`, `3h`, `2d`, `6w`, `4mo` or `2y`.
+pub fn age(seconds: i64) -> String {
+    const MINUTE: i64 = 60;
+    const HOUR: i64 = 60 * MINUTE;
+    const DAY: i64 = 24 * HOUR;
+    let units = [
+        (365 * DAY, "y"),
+        (30 * DAY, "mo"),
+        (7 * DAY, "w"),
+        (DAY, "d"),
+        (HOUR, "h"),
+        (MINUTE, "m"),
+    ];
+    units.iter().find(|(size, _)| seconds >= *size).map_or_else(
+        || "now".into(),
+        |(size, unit)| format!("{}{unit}", seconds / size),
+    )
+}
+
 pub fn state(worktree: &Worktree, result: Option<&InspectResult>) -> String {
     if let Some(Err(_)) = result {
         return "error".into();
@@ -122,6 +141,23 @@ mod tests {
         };
 
         assert_eq!(status(&value), "3 changed, 1 untracked, ↑2, ↓1");
+    }
+
+    #[test]
+    fn age_should_use_the_largest_whole_unit() {
+        let ages = [
+            0,
+            59,
+            90,
+            7200,
+            3 * 86_400,
+            15 * 86_400,
+            70 * 86_400,
+            800 * 86_400,
+        ]
+        .map(age);
+
+        assert_eq!(ages, ["now", "now", "1m", "2h", "3d", "2w", "2mo", "2y"]);
     }
 
     #[test]

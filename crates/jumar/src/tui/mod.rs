@@ -260,6 +260,19 @@ impl App {
                     editor.set_message(format!("{}{more}", errors[0]));
                 }
             },
+            Action::Command(command) if command == "clean" => {
+                let (safe, loading) = self.buffer.safe_entries();
+                let editor = &mut self.buffer.editor;
+                let message = match editor.delete_entries(&safe) {
+                    0 => "no safe worktrees to clean".to_owned(),
+                    1 => "cleaned 1 safe worktree; :w to review".to_owned(),
+                    n => format!("cleaned {n} safe worktrees; :w to review"),
+                };
+                editor.set_message(match loading {
+                    0 => message,
+                    n => format!("{message} ({n} still loading)"),
+                });
+            }
             Action::Command(command) => {
                 editor.set_message(format!("not an editor command: {command}"));
             }

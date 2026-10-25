@@ -211,6 +211,29 @@ impl Editor {
         self.message = Some(message.into());
     }
 
+    /// Deletes the visible lines of `ids` in one undoable step, skipping fixed ones.
+    /// Returns how many were deleted.
+    pub fn delete_entries(&mut self, ids: &HashSet<EntryId>) -> usize {
+        let rows: Vec<usize> = self
+            .rows()
+            .filter(|(_, line)| matches!(line, Line::Existing { id, .. } if ids.contains(id)))
+            .map(|(index, _)| index)
+            .collect();
+        let targets = self.deletable(&rows);
+        if targets.is_empty() {
+            return 0;
+        }
+        self.checkpoint();
+        for &row in targets.iter().rev() {
+            self.lines.remove(row);
+        }
+        let above = targets.iter().filter(|&&r| r < self.row).count();
+        self.row = self.row.saturating_sub(above);
+        self.col = 0;
+        self.settle();
+        targets.len()
+    }
+
     /// Blank new lines are ignored, matching the planner.
     #[must_use]
     pub fn is_modified(&self) -> bool {
@@ -884,6 +907,38 @@ mod tests {
             }
         }
         action
+    }
+
+    #[test]
+    fn delete_entries_should_skip_lines_the_filter_hides() {
+        let mut ed = editor(&["a", "b", "c"]);
+        let ids = [0, 1, 2].map(EntryId).into_iter().collect();
+        feed(&mut ed, "/c<CR>");
+
+        let deleted = ed.delete_entries(&ids);
+
+        assert_eq!((deleted, texts(&ed)), (1, vec!["a", "b"]));
+    }
+
+    #[test]
+    fn delete_entries_should_skip_fixed_lines() {
+        let mut ed = editor(&["(main)", "a", "b"]);
+        let ids = [0, 1, 2].map(EntryId).into_iter().collect();
+
+        let deleted = ed.delete_entries(&ids);
+
+        assert_eq!((deleted, texts(&ed)), (2, vec!["(main)"]));
+    }
+
+    #[test]
+    fn delete_entries_should_undo_in_one_step() {
+        let mut ed = editor(&["a", "b", "c"]);
+        let ids = [EntryId(0), EntryId(2)].into_iter().collect();
+        ed.delete_entries(&ids);
+
+        feed(&mut ed, "u");
+
+        assert_eq!(texts(&ed), ["a", "b", "c"]);
     }
 
     fn texts(editor: &Editor) -> Vec<&str> {

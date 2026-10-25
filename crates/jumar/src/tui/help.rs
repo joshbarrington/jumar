@@ -12,6 +12,7 @@ const SECTIONS: [(&str, &[(&str, &str)]); 4] = [
         &[
             ("/", "filter by name, repo, source or branch"),
             ("dd", "remove the worktree (v V then d for several)"),
+            (":clean", "remove every safe worktree shown"),
             ("cw", "rename it"),
             (
                 "o O",

@@ -13,6 +13,9 @@ pub struct Inspection {
     /// `None` when there is no checkout to run `git status` in.
     pub status: Option<Status>,
     pub tier: Tier,
+    /// When HEAD was committed, in Unix seconds; `None` without a checkout or a commit.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_commit: Option<i64>,
 }
 
 /// # Errors
@@ -24,7 +27,17 @@ pub fn inspect(worktree: &Worktree) -> Result<Inspection> {
         Health::Prunable | Health::Orphaned => None,
     };
     let tier = safety::assess(worktree, status.as_ref().unwrap_or(&Status::default()))?;
-    Ok(Inspection { status, tier })
+    let last_commit = match worktree.health {
+        Health::Healthy => git::run(&worktree.path, &["log", "-1", "--format=%ct"])
+            .ok()
+            .and_then(|out| out.trim().parse().ok()),
+        Health::Prunable | Health::Orphaned => None,
+    };
+    Ok(Inspection {
+        status,
+        tier,
+        last_commit,
+    })
 }
 
 /// Inspects every worktree on `workers` background threads. Results arrive in completion
