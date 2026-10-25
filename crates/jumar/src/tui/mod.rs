@@ -45,11 +45,11 @@ pub enum Outcome {
 /// `pick` turns Enter and Tab into choosing worktrees for an agent.
 pub fn run(pick: bool) -> Result<Outcome> {
     let env = Env::load()?;
-    let mut buffer = Buffer::new(discover::scan(&env)?, env.config.tools());
-    buffer.pick = pick;
+    let buffer = Buffer::new(discover::scan(&env)?, env.config.tools());
     let mut app = App {
         env,
         buffer,
+        pick,
         screen: Screen::Edit,
     };
     let mut terminal = ratatui::try_init()?;
@@ -75,6 +75,8 @@ enum Screen {
 struct App {
     env: Env,
     buffer: Buffer,
+    /// Under `jumar pick`, where Enter and Tab choose worktrees for an agent.
+    pick: bool,
     screen: Screen,
 }
 
@@ -103,15 +105,15 @@ impl App {
                 };
                 execute!(io::stdout(), shape)?;
             }
-            let tools = self.env.config.tools();
+            let (tools, pick) = (self.env.config.tools(), self.pick);
             let (buffer, screen) = (&mut self.buffer, &self.screen);
             terminal.draw(|frame| {
-                buffer.render(frame, matches!(screen, Screen::Edit));
+                buffer.render(frame, matches!(screen, Screen::Edit), pick);
                 match screen {
                     Screen::Edit => {}
                     Screen::Confirm(confirm) => confirm.render(frame),
                     Screen::Report(report) => report.render(frame),
-                    Screen::Help => help::render(frame, tools),
+                    Screen::Help => help::render(frame, tools, pick),
                 }
             })?;
 
@@ -205,16 +207,8 @@ impl App {
             Action::Open(_) | Action::Context(_) if editor.is_modified() => {
                 editor.set_message("unsaved changes (:w to apply, :q! to discard)");
             }
-            Action::Open(id) if self.buffer.pick => {
-                return Some(Effect::Exit(Outcome::Picked(
-                    self.describe(Use::Work, &[id]),
-                )));
-            }
-            Action::Context(ids) if self.buffer.pick => {
-                return Some(Effect::Exit(Outcome::Picked(
-                    self.describe(Use::Context, &ids),
-                )));
-            }
+            Action::Open(id) if self.pick => return Some(self.picked(Use::Work, &[id])),
+            Action::Context(ids) if self.pick => return Some(self.picked(Use::Context, &ids)),
             Action::Context(_) => {
                 editor.set_message("Tab passes worktrees to an agent under `jumar pick`");
             }
@@ -274,12 +268,11 @@ impl App {
 }
 
 impl App {
-    fn describe(&self, use_: Use, ids: &[EntryId]) -> String {
-        let picked: Vec<_> = ids
+    fn picked(&self, use_: Use, ids: &[EntryId]) -> Effect {
+        let picked = ids
             .iter()
-            .map(|id| (&self.buffer.worktrees[id.0], self.buffer.state(*id)))
-            .collect();
-        pick::describe(use_, &picked)
+            .map(|id| (&self.buffer.worktrees[id.0], self.buffer.state(*id)));
+        Effect::Exit(Outcome::Picked(pick::describe(use_, picked)))
     }
 
     /// Rebuilds the list when worktrees came or went, but only while nothing is being

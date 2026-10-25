@@ -34,14 +34,14 @@ const SECTIONS: [(&str, &[(&str, &str)]); 4] = [
                 "go to the worktree (its herdr workspace inside herdr)",
             ),
             ("yp", "copy its path"),
-            ("Tab", "under jumar pick: pass it to the agent as context"),
             ("R :e", "reload and refresh status (:e! drops edits)"),
         ],
     ),
     ("Help", &[("?", "toggle this help")]),
 ];
 
-pub fn render(frame: &mut Frame, tools: &[Tool]) {
+/// `pick` adds the keys that choose worktrees for an agent.
+pub fn render(frame: &mut Frame, tools: &[Tool], pick: bool) {
     let tool_keys: Vec<(String, &str)> = tools
         .iter()
         .map(|tool| (format!("<Space>{}", tool.key), tool.name.as_str()))
@@ -50,6 +50,21 @@ pub fn render(frame: &mut Frame, tools: &[Tool]) {
         .iter()
         .map(|(title, keys)| (*title, keys.to_vec()))
         .collect();
+    if pick {
+        sections.insert(
+            0,
+            (
+                "Pick",
+                vec![
+                    ("Enter", "have the agent work in the worktree"),
+                    (
+                        "Tab",
+                        "pass it to the agent as context (v V then Tab for several)",
+                    ),
+                ],
+            ),
+        );
+    }
     if !tool_keys.is_empty() {
         sections.push((
             "Tools",

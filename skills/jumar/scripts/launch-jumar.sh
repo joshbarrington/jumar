@@ -17,7 +17,7 @@ trap 'rm -rf "$DIR"' EXIT
 
 sq() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
 
-# The empty fallback ends the wait below even if jumar dies before writing its pick.
+# jumar writes an empty pick however it exits; this fallback covers it being killed.
 CMD="$(sq "$JUMAR") pick --output $(sq "$OUT"); [ -e $(sq "$OUT") ] || : > $(sq "$OUT")"
 
 wait_for_pick() {

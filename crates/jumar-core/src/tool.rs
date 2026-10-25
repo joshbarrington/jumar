@@ -20,22 +20,16 @@ struct Vars<'a> {
 /// or git fails.
 pub fn render(command: &[String], worktree: &Worktree) -> Result<Vec<String>> {
     let uses = |placeholder: &str| command.iter().any(|arg| arg.contains(placeholder));
-    let (base, default_branch) = if uses("{base}") || uses("{default_branch}") {
-        let default = git::default_branches(&worktree.repo, worktree.default_branch.as_deref())?
-            .into_iter()
-            .next()
-            .ok_or_else(|| Error::NoDefaultBranch(worktree.repo.clone()))?;
-        let base = if uses("{base}") {
-            git::run(&worktree.path, &["merge-base", &default, "HEAD"])?
-                .trim()
-                .to_owned()
-        } else {
-            String::new()
-        };
-        (base, git::short_ref(&default).to_owned())
+    let default = if uses("{base}") || uses("{default_branch}") {
+        Some(default_ref(worktree)?)
     } else {
-        (String::new(), String::new())
+        None
     };
+    let base = match &default {
+        Some(default) if uses("{base}") => merge_base(worktree, default)?,
+        _ => String::new(),
+    };
+    let default_branch = default.as_deref().map_or("", git::short_ref).to_owned();
     let vars = Vars {
         path: utf8(&worktree.path)?,
         repo: utf8(&worktree.repo)?,
@@ -68,6 +62,28 @@ pub fn unknown_placeholder(arg: &str) -> Option<&str> {
         rest = &after[end + 1..];
     }
     None
+}
+
+/// Where the worktree's HEAD left its repo's default branch.
+///
+/// # Errors
+///
+/// Fails when the repo has no default branch, or git fails.
+pub fn base(worktree: &Worktree) -> Result<String> {
+    merge_base(worktree, &default_ref(worktree)?)
+}
+
+fn default_ref(worktree: &Worktree) -> Result<String> {
+    git::default_branches(&worktree.repo, worktree.default_branch.as_deref())?
+        .into_iter()
+        .next()
+        .ok_or_else(|| Error::NoDefaultBranch(worktree.repo.clone()))
+}
+
+fn merge_base(worktree: &Worktree, default: &str) -> Result<String> {
+    Ok(git::run(&worktree.path, &["merge-base", default, "HEAD"])?
+        .trim()
+        .to_owned())
 }
 
 fn fill(arg: &str, vars: &Vars) -> String {

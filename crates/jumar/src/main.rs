@@ -53,22 +53,12 @@ fn main() -> anyhow::Result<()> {
             Ok(())
         }
         Some(Command::Pick { output }) => {
-            let text = match tui::run(true) {
-                Ok(tui::Outcome::Picked(text)) => text,
-                Ok(_) => String::new(),
-                Err(err) => {
-                    // A launcher waiting for the file must not hang on a failed run.
-                    if let Some(path) = &output {
-                        let _ = pick::write(path, "");
-                    }
-                    return Err(err);
-                }
+            let output = pick::Output::new(output);
+            let text = match tui::run(true)? {
+                tui::Outcome::Picked(text) => text,
+                _ => String::new(),
             };
-            if let Some(path) = output {
-                return pick::write(&path, &text);
-            }
-            print!("{text}");
-            Ok(())
+            output.finish(&text)
         }
         None => {
             let _pane = plugin::PaneRecord::register();

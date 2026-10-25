@@ -25,8 +25,6 @@ use crate::format::{self, InspectResult};
 pub struct Buffer {
     pub worktrees: Arc<[Worktree]>,
     pub editor: Editor,
-    /// Under `jumar pick`, where Enter and Tab choose worktrees for an agent.
-    pub pick: bool,
     results: Vec<Option<InspectResult>>,
     /// Worktrees other than main checkouts, for the title.
     linked: usize,
@@ -92,7 +90,6 @@ impl Buffer {
                 .collect(),
             loading: worktrees.len(),
             linked: worktrees.iter().filter(|w| !w.main).count(),
-            pick: false,
             inspections: inspect_all(&worktrees, discover::WORKERS),
             editor,
             worktrees,
@@ -114,7 +111,6 @@ impl Buffer {
             .cursor_entry()
             .map(|id| self.worktrees[id.0].path.clone());
         let mut next = Self::new(scan, tools);
-        next.pick = self.pick;
         let entry = at
             .and_then(|path| next.worktrees.iter().position(|w| w.path == path))
             .map(EntryId);
@@ -234,7 +230,8 @@ impl Buffer {
     }
 
     /// `focused` is false while a pop-up sits on top, which then owns the cursor.
-    pub fn render(&mut self, frame: &mut Frame, focused: bool) {
+    /// `pick` shows the keys that choose worktrees for an agent.
+    pub fn render(&mut self, frame: &mut Frame, focused: bool, pick: bool) {
         let area = super::framed(frame, frame.area(), "jumar", self.summary());
         let [header, list, _, status] = Layout::vertical([
             Constraint::Length(1),
@@ -313,7 +310,7 @@ impl Buffer {
         let status_line = self.status_line();
         let prompt_end = status_line.width();
         frame.render_widget(Paragraph::new(status_line), status);
-        let keys: &[(&str, &str)] = if self.pick {
+        let keys: &[(&str, &str)] = if pick {
             &[("⏎", "work here"), ("⇥", "add as context"), ("?", "help")]
         } else {
             &[("?", "help")]

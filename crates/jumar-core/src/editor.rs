@@ -255,17 +255,9 @@ impl Editor {
             (Pending::Change, Key::Char('w')) => self.change_word(),
             (Pending::Change, Key::Char('i')) => self.pending = Pending::ChangeInner,
             (Pending::ChangeInner, Key::Char('w')) => self.change_inner_word(),
-            (Pending::Yank, Key::Char('p')) => {
-                if let Some(Line::Existing { id, .. }) = self.current_row().map(|r| &self.lines[r])
-                {
-                    return Some(Action::YankPath(*id));
-                }
-            }
+            (Pending::Yank, Key::Char('p')) => return self.cursor_entry().map(Action::YankPath),
             (Pending::Leader, Key::Char(key)) => {
-                if let Some(Line::Existing { id, .. }) = self.current_row().map(|r| &self.lines[r])
-                {
-                    return Some(Action::Tool { key, id: *id });
-                }
+                return self.cursor_entry().map(|id| Action::Tool { key, id });
             }
             _ => {}
         }
@@ -365,17 +357,27 @@ impl Editor {
     }
 
     fn context_selection(&mut self) -> Option<Action> {
-        let (first, last) = self.selection()?;
-        self.mode = Mode::Normal;
         let ids: Vec<EntryId> = self
-            .rows()
-            .filter(|(row, _)| (first..=last).contains(row))
-            .filter_map(|(_, line)| match line {
-                Line::Existing { id, .. } => Some(*id),
+            .take_selection()?
+            .into_iter()
+            .filter_map(|row| match self.lines[row] {
+                Line::Existing { id, .. } => Some(id),
                 Line::New(_) => None,
             })
             .collect();
         (!ids.is_empty()).then_some(Action::Context(ids))
+    }
+
+    /// Ends visual mode, returning the visible lines it selected.
+    fn take_selection(&mut self) -> Option<Vec<usize>> {
+        let (first, last) = self.selection()?;
+        self.mode = Mode::Normal;
+        Some(
+            self.visible()
+                .into_iter()
+                .filter(|row| (first..=last).contains(row))
+                .collect(),
+        )
     }
 
     fn insert(&mut self, key: Key) {
@@ -654,15 +656,10 @@ impl Editor {
     }
 
     fn delete_selection(&mut self) {
-        let Some((first, last)) = self.selection() else {
+        let Some(selected) = self.take_selection() else {
             return;
         };
-        self.mode = Mode::Normal;
-        let selected: Vec<usize> = self
-            .visible()
-            .into_iter()
-            .filter(|row| (first..=last).contains(row))
-            .collect();
+        let first = selected.first().copied().unwrap_or(self.row);
         let targets = self.deletable(&selected);
         if targets.is_empty() {
             return;
