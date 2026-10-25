@@ -5,6 +5,7 @@ mod list;
 mod pick;
 mod plugin;
 mod shell;
+mod stdout;
 mod tools;
 mod tui;
 
@@ -48,10 +49,7 @@ fn main() -> anyhow::Result<()> {
     }
     match cli.command {
         Some(Command::List { json }) => list::run(json),
-        Some(Command::Init { shell }) => {
-            print!("{}", shell::init_script(shell));
-            Ok(())
-        }
+        Some(Command::Init { shell }) => stdout::write(shell::init_script(shell)),
         Some(Command::Pick { output }) => {
             let output = pick::Output::new(output);
             let text = match tui::run(true)? {

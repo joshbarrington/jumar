@@ -55,7 +55,7 @@ pub fn hand_off(dir: &Path) -> Result<()> {
         return std::fs::write(&file, dir.as_os_str().as_encoded_bytes())
             .with_context(|| format!("could not write {}", Path::new(&file).display()));
     }
-    println!("{}", dir.display());
+    crate::stdout::write(&format!("{}\n", dir.display()))?;
     let shell = parent_command().or_else(|| std::env::var("SHELL").ok());
     eprintln!("jumar: {} to cd on Enter", setup_hint(shell.as_deref()));
     Ok(())

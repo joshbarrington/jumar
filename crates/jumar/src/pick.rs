@@ -64,8 +64,7 @@ impl Output {
             self.0 = None;
             return Ok(());
         }
-        print!("{text}");
-        Ok(())
+        crate::stdout::write(text)
     }
 }
 

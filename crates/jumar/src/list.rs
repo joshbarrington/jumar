@@ -5,8 +5,8 @@ use jumar_core::inspect::{Inspection, inspect_all};
 use jumar_core::model::Worktree;
 use serde::Serialize;
 
-use crate::discover;
 use crate::format::{self, InspectResult};
+use crate::{discover, stdout};
 
 #[derive(Serialize)]
 struct Entry<'a> {
@@ -44,14 +44,19 @@ pub fn run(json: bool) -> Result<()> {
                     .map(ToString::to_string),
             })
             .collect();
-        println!("{}", serde_json::to_string_pretty(&entries)?);
+        stdout::write(&format!("{}\n", serde_json::to_string_pretty(&entries)?))?;
     } else {
-        print_table(&worktrees, &results);
+        stdout::write(&table(&worktrees, &results))?;
+        for (worktree, result) in worktrees.iter().zip(&results) {
+            if let Some(Err(err)) = result {
+                eprintln!("jumar: {}: {err}", worktree.path.display());
+            }
+        }
     }
     Ok(())
 }
 
-fn print_table(worktrees: &[Worktree], results: &[Option<InspectResult>]) {
+fn table(worktrees: &[Worktree], results: &[Option<InspectResult>]) -> String {
     let rows: Vec<[String; 6]> = worktrees
         .iter()
         .zip(results)
@@ -72,17 +77,15 @@ fn print_table(worktrees: &[Worktree], results: &[Option<InspectResult>]) {
             *width = (*width).max(cell.chars().count());
         }
     }
+    let mut text = String::new();
     for row in &rows {
         let line: Vec<String> = row
             .iter()
             .zip(widths)
             .map(|(cell, width)| format!("{cell:<width$}"))
             .collect();
-        println!("{}", line.join("  ").trim_end());
+        text.push_str(line.join("  ").trim_end());
+        text.push('\n');
     }
-    for (worktree, result) in worktrees.iter().zip(results) {
-        if let Some(Err(err)) = result {
-            eprintln!("jumar: {}: {err}", worktree.path.display());
-        }
-    }
+    text
 }
