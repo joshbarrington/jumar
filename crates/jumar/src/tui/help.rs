@@ -21,17 +21,21 @@ const SECTIONS: [(&str, &[(&str, &str)]); 4] = [
         &[
             (":w", "review and apply changes"),
             (
-                "y n f D",
+                "y q f D",
                 "in the review: apply, back, force, toggle branch deletion",
             ),
         ],
     ),
     (
         "Go",
-        &[(
-            "Enter",
-            "go to the worktree (its herdr workspace inside herdr)",
-        )],
+        &[
+            (
+                "Enter",
+                "go to the worktree (its herdr workspace inside herdr)",
+            ),
+            ("yp", "copy its path"),
+            ("R :e", "reload and refresh status (:e! drops edits)"),
+        ],
     ),
     ("Help", &[("?", "toggle this help")]),
 ];

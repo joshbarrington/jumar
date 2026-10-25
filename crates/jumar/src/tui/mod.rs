@@ -171,6 +171,20 @@ impl App {
         match action {
             Action::Quit => return Some(Effect::Exit(Outcome::Quit)),
             Action::Help => self.screen = Screen::Help,
+            Action::YankPath(id) => {
+                let path = self.buffer.worktrees[id.0].path.display().to_string();
+                editor.set_message(match crate::clipboard::copy(&path) {
+                    Ok(()) => format!("yanked {path}"),
+                    Err(err) => format!("could not copy: {err}"),
+                });
+            }
+            Action::Reload => match discover::scan(&self.env) {
+                Ok(worktrees) => {
+                    self.buffer = Buffer::new(worktrees, &self.env.config.tools());
+                    self.buffer.editor.set_message("reloaded");
+                }
+                Err(err) => editor.set_message(format!("reload failed: {err:#}")),
+            },
             Action::Open(_) if editor.is_modified() => {
                 editor.set_message("unsaved changes (:w to apply, :q! to discard)");
             }

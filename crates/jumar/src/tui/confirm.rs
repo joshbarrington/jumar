@@ -67,7 +67,7 @@ impl Confirm {
                 }
             }
             Key::Char('y') => return Some(Decision::Run),
-            Key::Char('n' | 'q') | Key::Esc | Key::Ctrl('c') => return Some(Decision::Cancel),
+            Key::Char('q') | Key::Esc | Key::Ctrl('c') => return Some(Decision::Cancel),
             _ => {}
         }
         None
@@ -139,7 +139,7 @@ impl Confirm {
         let mut footer = vec![mode_tag("CONFIRM", theme::YELLOW)];
         footer.extend(hints([
             ("y", "apply"),
-            ("n", "back"),
+            ("q", "back"),
             ("f", "force"),
             ("D", "delete branch"),
         ]));

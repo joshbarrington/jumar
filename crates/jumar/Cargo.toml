@@ -10,6 +10,7 @@ homepage.workspace = true
 
 [dependencies]
 anyhow.workspace = true
+base64.workspace = true
 clap.workspace = true
 jumar-core.workspace = true
 ratatui.workspace = true

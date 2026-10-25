@@ -39,6 +39,9 @@ pub enum Action {
         id: EntryId,
     },
     Help,
+    YankPath(EntryId),
+    /// Rescan the worktrees, dropping any edits.
+    Reload,
     /// An ex command the editor does not handle itself, such as `prune`.
     Command(String),
 }
@@ -58,6 +61,7 @@ enum Pending {
     Delete,
     Change,
     ChangeInner,
+    Yank,
     Leader,
 }
 
@@ -217,6 +221,12 @@ impl Editor {
             (Pending::Change, Key::Char('w')) => self.change_word(),
             (Pending::Change, Key::Char('i')) => self.pending = Pending::ChangeInner,
             (Pending::ChangeInner, Key::Char('w')) => self.change_inner_word(),
+            (Pending::Yank, Key::Char('p')) => {
+                if let Some(Line::Existing { id, .. }) = self.current_row().map(|r| &self.lines[r])
+                {
+                    return Some(Action::YankPath(*id));
+                }
+            }
             (Pending::Leader, Key::Char(key)) => {
                 if let Some(Line::Existing { id, .. }) = self.current_row().map(|r| &self.lines[r])
                 {
@@ -259,6 +269,8 @@ impl Editor {
                 self.count = count;
             }
             Key::Char(' ') => self.pending = Pending::Leader,
+            Key::Char('y') => self.pending = Pending::Yank,
+            Key::Char('R') => return self.reload(false),
             Key::Char('v' | 'V') if self.current_row().is_some() => {
                 self.anchor = self.row;
                 self.mode = Mode::Visual;
@@ -333,6 +345,14 @@ impl Editor {
         }
     }
 
+    fn reload(&mut self, discard: bool) -> Option<Action> {
+        if self.is_modified() && !discard {
+            self.set_message("unsaved changes (:e! to discard)");
+            return None;
+        }
+        Some(Action::Reload)
+    }
+
     fn command(&mut self, key: Key) -> Option<Action> {
         match key {
             Key::Char(c) => self.prompt.push(c),
@@ -355,6 +375,8 @@ impl Editor {
                     }
                     "q" | "q!" => Some(Action::Quit),
                     "h" | "help" => Some(Action::Help),
+                    "e" => self.reload(false),
+                    "e!" => self.reload(true),
                     other => Some(Action::Command(other.to_owned())),
                 };
             }
@@ -865,6 +887,24 @@ mod tests {
             ed.lines()[0],
             Line::Existing { id: EntryId(1), .. }
         ));
+    }
+
+    #[test]
+    fn yp_should_yank_current_worktree_path() {
+        assert_eq!(
+            feed(&mut editor(&ABC), "jyp"),
+            Some(Action::YankPath(EntryId(1)))
+        );
+    }
+
+    #[test]
+    fn reload_should_refuse_with_unsaved_changes() {
+        assert_eq!(feed(&mut editor(&ABC), "ddR"), None);
+    }
+
+    #[test]
+    fn e_bang_should_reload_despite_unsaved_changes() {
+        assert_eq!(feed(&mut editor(&ABC), "dd:e!<CR>"), Some(Action::Reload));
     }
 
     #[test]

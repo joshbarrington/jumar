@@ -1,3 +1,4 @@
+mod clipboard;
 mod discover;
 mod format;
 mod list;

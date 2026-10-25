@@ -40,6 +40,8 @@ jumar init fish | source
 | `u` `Ctrl-r` | undo, redo |
 | `:w` `:wq` `:q` `:q!` | apply, apply and quit, quit |
 | `Enter` | go to the worktree (its herdr workspace inside herdr) |
+| `yp` | copy the worktree's path |
+| `R` `:e` | reload, refreshing every status (`:e!` drops unsaved edits) |
 | `<Space>d` | open revdiff on the worktree's changes |
 | `<Space>r` | open reviewr in the worktree's herdr workspace |
 | `?` `:help` | show these keys |
