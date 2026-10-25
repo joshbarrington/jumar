@@ -13,8 +13,10 @@ use serde::Deserialize;
 
 use crate::{Error, Result};
 
-/// A hung server must not hang jumar.
-const CALL_TIMEOUT: Duration = Duration::from_secs(5);
+/// A hung server must not hang jumar. Reads are quick; changes can delete or check out a
+/// whole worktree, so they get longer.
+const READ_TIMEOUT: Duration = Duration::from_secs(5);
+const CHANGE_TIMEOUT: Duration = Duration::from_secs(60);
 
 #[derive(Debug, Clone)]
 pub struct Herdr {
@@ -88,7 +90,7 @@ impl Herdr {
     ///
     /// Fails when herdr is not installed, no server is running, or it answers oddly.
     pub fn state(&self) -> Result<State> {
-        parse_snapshot(&self.call(&["api", "snapshot"])?)
+        parse_snapshot(&self.call_within(&["api", "snapshot"], READ_TIMEOUT)?)
     }
 
     /// Opens (or goes to) the workspace for an existing worktree of `repo`. herdr finds
@@ -159,8 +161,12 @@ impl Herdr {
         self.call(&args).map(drop)
     }
 
-    /// Runs herdr and returns its stdout. herdr reports failures as JSON on stderr.
     fn call(&self, args: &[&str]) -> Result<String> {
+        self.call_within(args, CHANGE_TIMEOUT)
+    }
+
+    /// Runs herdr and returns its stdout. herdr reports failures as JSON on stderr.
+    fn call_within(&self, args: &[&str], timeout: Duration) -> Result<String> {
         let mut command = Command::new(&self.bin);
         command.args(args).stdin(Stdio::null());
         let args = args.join(" ");
@@ -170,7 +176,7 @@ impl Herdr {
             let _ = tx.send(command.output());
         });
         let output = rx
-            .recv_timeout(CALL_TIMEOUT)
+            .recv_timeout(timeout)
             .map_err(|_| Error::Herdr(format!("`herdr {args}` did not answer in time")))?
             .map_err(Error::HerdrSpawn)?;
         let stdout = String::from_utf8_lossy(&output.stdout).into_owned();

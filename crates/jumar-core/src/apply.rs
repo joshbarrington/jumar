@@ -424,98 +424,121 @@ pub fn expand_template(template: &str, repo: &Path, name: &str, home: &Path) -> 
 pub fn execute(step: &Step, herdr: &Herdr) -> Result<Vec<String>> {
     let mut notes = Vec::new();
     match step {
-        Step::Remove(remove) => {
-            let worktree = &remove.worktree;
-            // Even `--force` refuses a locked worktree, and herdr would hit the same.
-            if worktree.locked.is_some() {
-                git::run(
-                    &worktree.repo,
-                    &["worktree", "unlock", utf8(&worktree.path)?],
-                )?;
-            }
-            match &remove.workspace {
-                Some(workspace) if worktree.health == Health::Healthy => {
-                    herdr.remove(&workspace.id, remove.force)?;
-                }
-                // A prunable worktree's directory is gone, which `worktree remove` refuses.
-                _ if worktree.health == Health::Prunable => {
-                    git::run(&worktree.repo, &["worktree", "prune"])?;
-                }
-                _ => {
-                    let mut args = vec!["worktree", "remove"];
-                    if remove.force {
-                        args.push("--force");
-                    }
-                    args.push(utf8(&worktree.path)?);
-                    git::run(&worktree.repo, &args)?;
-                }
-            }
-            // herdr may already have deleted the branch along with the checkout.
-            if remove.delete_branch
-                && let Some(branch) = remove.branch()
-                && git::branch_exists(&worktree.repo, branch)?
-            {
-                git::run(&worktree.repo, &["branch", "-D", branch])?;
-            }
-        }
-        Step::Move(step) => {
-            let worktree = &step.worktree;
-            if let Some(workspace) = &step.workspace {
-                herdr.close_workspace(workspace)?;
-            }
-            let args = ["worktree", "move", utf8(&worktree.path)?, utf8(&step.to)?];
-            git::run(&worktree.repo, &args)?;
-            if let (Some(new), Some(Head::Branch(old))) = (&step.rename_branch, &worktree.head) {
-                git::run(&worktree.repo, &["branch", "-m", old, new])?;
-            }
-            if step.workspace.is_some() {
-                herdr.open(&step.to, &worktree.repo, false)?;
-            }
-        }
-        Step::Create(create) => {
-            if let Some(fetch) = &create.fetch
-                && let Err(err) = git::fetch(&create.repo, &fetch.remote, &fetch.from, &fetch.into)
-            {
-                if let Some(number) = fetch.pull {
-                    return Err(Error::PullFetch {
-                        number,
-                        remote: fetch.remote.clone(),
-                        source: Box::new(err),
-                    });
-                }
-                notes.push(format!(
-                    "could not fetch {}, so it starts from the last fetched commit: {err}",
-                    git::short_ref(&fetch.into)
-                ));
-            }
-            let path = utf8(&create.path)?;
-            match &create.start {
-                Start::Existing => {
-                    git::run(&create.repo, &["worktree", "add", path, &create.branch])?;
-                }
-                // `--no-track` keeps a branch made from `origin/main` from pushing to main.
-                Start::From(base) => {
-                    let args = [
-                        "worktree",
-                        "add",
-                        "--no-track",
-                        "-b",
-                        &create.branch,
-                        path,
-                        base,
-                    ];
-                    git::run(&create.repo, &args)?;
-                }
-            }
-            // The worktree exists now, so it opens in herdr even when its setup failed.
-            let setup = set_up(create);
-            if create.open_in_herdr {
-                herdr.open(&create.path, &create.repo, false)?;
-            }
-            setup?;
-        }
+        Step::Remove(remove) => execute_remove(remove, herdr, &mut notes)?,
+        Step::Move(step) => execute_move(step, herdr)?,
+        Step::Create(create) => execute_create(create, herdr, &mut notes)?,
     }
     Ok(notes)
+}
+
+fn execute_remove(remove: &Remove, herdr: &Herdr, notes: &mut Vec<String>) -> Result<()> {
+    let worktree = &remove.worktree;
+    // The grade can be minutes old by now, and an agent may have committed since.
+    let mut delete_branch = remove.delete_branch;
+    if delete_branch
+        && remove.tier == Tier::Safe
+        && worktree.health == Health::Healthy
+        && !inspect::inspect(worktree).is_ok_and(|i| i.tier == Tier::Safe)
+        && let Some(branch) = remove.branch()
+    {
+        delete_branch = false;
+        notes.push(format!(
+            "kept branch {branch}: it changed since jumar checked it, so deleting it \
+             might lose work"
+        ));
+    }
+    // Even `--force` refuses a locked worktree, and herdr would hit the same.
+    if worktree.locked.is_some() {
+        git::run(
+            &worktree.repo,
+            &["worktree", "unlock", utf8(&worktree.path)?],
+        )?;
+    }
+    match &remove.workspace {
+        Some(workspace) if worktree.health == Health::Healthy => {
+            herdr.remove(&workspace.id, remove.force)?;
+        }
+        // A prunable worktree's directory is gone, which `worktree remove` refuses.
+        _ if worktree.health == Health::Prunable => {
+            git::run(&worktree.repo, &["worktree", "prune"])?;
+        }
+        _ => {
+            let mut args = vec!["worktree", "remove"];
+            if remove.force {
+                args.push("--force");
+            }
+            args.push(utf8(&worktree.path)?);
+            git::run(&worktree.repo, &args)?;
+        }
+    }
+    // herdr may already have deleted the branch along with the checkout.
+    if delete_branch
+        && let Some(branch) = remove.branch()
+        && git::branch_exists(&worktree.repo, branch)?
+    {
+        git::run(&worktree.repo, &["branch", "-D", branch])?;
+    }
+    Ok(())
+}
+
+fn execute_move(step: &Move, herdr: &Herdr) -> Result<()> {
+    let worktree = &step.worktree;
+    if let Some(workspace) = &step.workspace {
+        herdr.close_workspace(workspace)?;
+    }
+    let args = ["worktree", "move", utf8(&worktree.path)?, utf8(&step.to)?];
+    git::run(&worktree.repo, &args)?;
+    if let (Some(new), Some(Head::Branch(old))) = (&step.rename_branch, &worktree.head) {
+        git::run(&worktree.repo, &["branch", "-m", old, new])?;
+    }
+    if step.workspace.is_some() {
+        herdr.open(&step.to, &worktree.repo, false)?;
+    }
+    Ok(())
+}
+
+fn execute_create(create: &Create, herdr: &Herdr, notes: &mut Vec<String>) -> Result<()> {
+    if let Some(fetch) = &create.fetch
+        && let Err(err) = git::fetch(&create.repo, &fetch.remote, &fetch.from, &fetch.into)
+    {
+        if let Some(number) = fetch.pull {
+            return Err(Error::PullFetch {
+                number,
+                remote: fetch.remote.clone(),
+                source: Box::new(err),
+            });
+        }
+        notes.push(format!(
+            "could not fetch {}, so it starts from the last fetched commit: {err}",
+            git::short_ref(&fetch.into)
+        ));
+    }
+    let path = utf8(&create.path)?;
+    match &create.start {
+        Start::Existing => {
+            git::run(&create.repo, &["worktree", "add", path, &create.branch])?;
+        }
+        // `--no-track` keeps a branch made from `origin/main` from pushing to main.
+        Start::From(base) => {
+            let args = [
+                "worktree",
+                "add",
+                "--no-track",
+                "-b",
+                &create.branch,
+                path,
+                base,
+            ];
+            git::run(&create.repo, &args)?;
+        }
+    }
+    // The worktree exists now, so it opens in herdr even when its setup failed.
+    let setup = set_up(create);
+    if create.open_in_herdr {
+        herdr.open(&create.path, &create.repo, false)?;
+    }
+    setup?;
+    Ok(())
 }
 
 fn set_up(create: &Create) -> Result<()> {

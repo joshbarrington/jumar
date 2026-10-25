@@ -652,6 +652,22 @@ fn execute_create_should_fail_without_creating_when_the_pr_is_missing() {
     assert!(!path.exists());
 }
 
+#[test]
+fn execute_remove_should_keep_a_branch_that_gained_commits_since_it_was_graded() {
+    let fx = Fixture::new();
+    let remove = fx.remove(0);
+    assert!(remove.delete_branch);
+    git(
+        &fx.worktrees[0].path,
+        &["commit", "-q", "--allow-empty", "-m", "late work"],
+    );
+
+    let notes = apply::execute(&Step::Remove(remove), &Herdr::new()).unwrap();
+
+    assert!(fx.has_branch("feat"));
+    assert!(notes[0].contains("kept branch feat"), "{notes:?}");
+}
+
 /// A herdr stand-in that logs its arguments and succeeds without touching anything.
 fn fake_herdr(fx: &Fixture) -> (Herdr, PathBuf) {
     let log = fx.home.join("herdr.log");
