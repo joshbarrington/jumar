@@ -60,10 +60,15 @@ pub fn state(worktree: &Worktree, result: Option<&InspectResult>) -> String {
         Health::Orphaned => return "orphaned".into(),
         Health::Healthy => {}
     }
-    result
+    let status = result
         .and_then(|r| r.as_ref().ok())
         .and_then(|i| i.status.as_ref())
-        .map_or_else(String::new, status)
+        .map_or_else(String::new, status);
+    match (&worktree.locked, status.as_str()) {
+        (None, _) => status,
+        (Some(_), "" | "clean") => "locked".into(),
+        (Some(_), _) => format!("locked, {status}"),
+    }
 }
 
 fn status(status: &Status) -> String {

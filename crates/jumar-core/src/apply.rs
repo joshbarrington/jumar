@@ -45,10 +45,15 @@ impl Remove {
         self.workspace.as_ref().map_or(0, |w| w.agents)
     }
 
-    /// Uncommitted changes and running agents both need an explicit force.
+    /// Uncommitted changes, running agents and a lock all need an explicit force.
+    #[must_use]
+    pub fn needs_force(&self) -> bool {
+        self.tier == Tier::Dirty || self.agents() > 0 || self.worktree.locked.is_some()
+    }
+
     #[must_use]
     pub fn is_runnable(&self) -> bool {
-        (self.tier != Tier::Dirty && self.agents() == 0) || self.force
+        !self.needs_force() || self.force
     }
 }
 
@@ -119,6 +124,9 @@ fn resolve(context: &Context, operation: &Operation) -> Result<Step, String> {
             rename_branch,
         } => {
             let worktree = &context.worktrees[id.0];
+            if worktree.locked.is_some() {
+                return Err("it is locked; run `git worktree unlock` to move it".into());
+            }
             let workspace = workspace_for(context, worktree);
             if workspace.is_some_and(|w| w.agents > 0) {
                 return Err("an agent is running in its herdr workspace".into());
@@ -280,6 +288,13 @@ pub fn execute(step: &Step, herdr: &Herdr) -> Result<()> {
     match step {
         Step::Remove(remove) => {
             let worktree = &remove.worktree;
+            // Even `--force` refuses a locked worktree, and herdr would hit the same.
+            if worktree.locked.is_some() {
+                git::run(
+                    &worktree.repo,
+                    &["worktree", "unlock", utf8(&worktree.path)?],
+                )?;
+            }
             match &remove.workspace {
                 Some(workspace) if worktree.health == Health::Healthy => {
                     herdr.remove(&workspace.id, remove.force)?;

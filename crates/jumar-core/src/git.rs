@@ -117,6 +117,7 @@ pub struct WorktreeEntry {
     pub head: Option<Head>,
     pub bare: bool,
     pub prunable: bool,
+    pub locked: Option<String>,
 }
 
 /// The first entry is the main worktree.
@@ -144,6 +145,7 @@ fn parse_worktree_block(block: &str) -> Result<WorktreeEntry> {
     let mut branch = None;
     let mut bare = false;
     let mut prunable = false;
+    let mut locked = None;
     for line in block.lines() {
         let (key, value) = line.split_once(' ').unwrap_or((line, ""));
         match key {
@@ -152,6 +154,7 @@ fn parse_worktree_block(block: &str) -> Result<WorktreeEntry> {
             "branch" => branch = Some(value.strip_prefix("refs/heads/").unwrap_or(value)),
             "bare" => bare = true,
             "prunable" => prunable = true,
+            "locked" => locked = Some(value.to_owned()),
             _ => {}
         }
     }
@@ -167,6 +170,7 @@ fn parse_worktree_block(block: &str) -> Result<WorktreeEntry> {
         head,
         bare,
         prunable,
+        locked,
     })
 }
 
@@ -259,6 +263,7 @@ branch refs/heads/main
 worktree /r/.claude/worktrees/a
 HEAD 2222
 branch refs/heads/feature/a
+locked on a usb drive
 
 worktree /gone
 HEAD 3333
@@ -284,6 +289,13 @@ prunable gitdir file points to non-existent location
             let entries = parse_worktree_list(LIST).unwrap();
 
             assert_eq!(entries[2].head, Some(Head::Detached("3333".into())));
+        }
+
+        #[test]
+        fn reads_lock_reason() {
+            let entries = parse_worktree_list(LIST).unwrap();
+
+            assert_eq!(entries[1].locked.as_deref(), Some("on a usb drive"));
         }
 
         #[test]

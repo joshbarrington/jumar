@@ -69,6 +69,7 @@ pub fn scan_repo(repo: &Path, known: &[Worktree]) -> Result<Vec<Worktree>> {
             } else {
                 Health::Healthy
             },
+            locked: entry.locked,
         })
         .filter(|w| !known.contains(w.path.as_path()))
         .collect();
@@ -88,12 +89,16 @@ fn read_worktree(dir: &Path, source: &str) -> Option<Worktree> {
             Health::Orphaned,
         )
     };
+    let locked = fs::read_to_string(git_dir.join("locked"))
+        .ok()
+        .map(|reason| reason.trim().to_owned());
     Some(Worktree {
         path: canonical(dir),
         repo,
         source: Some(source.to_owned()),
         head,
         health,
+        locked,
     })
 }
 

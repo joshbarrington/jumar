@@ -58,6 +58,7 @@ impl Fixture {
             source: Some("claude".into()),
             head: Some(Head::Branch(name.into())),
             health: Health::Healthy,
+            locked: None,
         });
         path
     }
@@ -373,4 +374,40 @@ fn execute_move_should_close_and_reopen_herdr_workspace() {
             to.display()
         )
     );
+}
+
+#[test]
+fn prepare_should_block_locked_worktree_until_forced() {
+    let mut fx = Fixture::new();
+    fx.worktrees[0].locked = Some(String::new());
+
+    assert!(!fx.remove(0).is_runnable());
+}
+
+#[test]
+fn prepare_should_block_moving_locked_worktree() {
+    let mut fx = Fixture::new();
+    fx.worktrees[0].locked = Some(String::new());
+
+    let blocked = fx.prepare(Operation::Move {
+        id: EntryId(0),
+        to: fx.repo().join(".claude/worktrees/x"),
+        rename_branch: None,
+    });
+
+    assert!(blocked.is_err());
+}
+
+#[test]
+fn execute_remove_should_unlock_locked_worktree_when_forced() {
+    let mut fx = Fixture::new();
+    let path = fx.worktrees[0].path.clone();
+    git(&fx.repo(), &["worktree", "lock", path.to_str().unwrap()]);
+    fx.worktrees[0].locked = Some(String::new());
+    let mut remove = fx.remove(0);
+    remove.force = true;
+
+    apply::execute(&Step::Remove(remove), &Herdr::new()).unwrap();
+
+    assert!(!path.exists());
 }

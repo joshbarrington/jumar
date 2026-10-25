@@ -85,6 +85,8 @@ impl Confirm {
                 Ok(Step::Remove(remove)) if !remove.is_runnable() => {
                     State::Skipped(if remove.agents() > 0 {
                         "agent running, not forced".into()
+                    } else if remove.worktree.locked.is_some() {
+                        "locked, not forced".into()
                     } else {
                         "uncommitted changes, not forced".into()
                     })
@@ -347,16 +349,12 @@ fn outcome(item: &Item) -> Option<Span<'static>> {
         Ok(Step::Remove(remove)) if !remove.is_runnable() => {
             Some(Span::raw("skipped unless forced").fg(theme::RED))
         }
-        Ok(Step::Remove(remove)) if needs_force(remove) => {
+        Ok(Step::Remove(remove)) if remove.needs_force() => {
             Some(Span::raw("FORCED").fg(theme::RED).bold())
         }
         Err(_) => Some(Span::raw("can't run").fg(theme::RED)),
         Ok(_) => None,
     }
-}
-
-fn needs_force(remove: &apply::Remove) -> bool {
-    remove.tier == Tier::Dirty || remove.agents() > 0
 }
 
 fn details(item: &Item, home: &Path) -> Vec<Line<'static>> {
@@ -467,8 +465,20 @@ fn remove_details(remove: &apply::Remove, home: &Path) -> Vec<Line<'static>> {
         }
         None => lines.push(field("branch", "none, the checkout is detached".into())),
     }
-    if needs_force(remove) {
+    if let Some(reason) = &worktree.locked {
+        lines.push(field(
+            "lock",
+            match reason.as_str() {
+                "" => "locked; unlocked if forced".into(),
+                reason => format!("locked ({reason}); unlocked if forced"),
+            },
+        ));
+    }
+    if remove.needs_force() {
         let mut what = Vec::new();
+        if worktree.locked.is_some() {
+            what.push("unlock".to_owned());
+        }
         if remove.tier == Tier::Dirty {
             what.push(format!(
                 "discard {}",

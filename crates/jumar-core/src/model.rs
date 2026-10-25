@@ -29,4 +29,7 @@ pub struct Worktree {
     pub source: Option<String>,
     pub head: Option<Head>,
     pub health: Health,
+    /// Set by `git worktree lock`, holding its reason (empty without one).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub locked: Option<String>,
 }

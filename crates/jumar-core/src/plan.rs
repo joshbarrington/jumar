@@ -193,6 +193,7 @@ mod tests {
             source: Some("claude".into()),
             head: Some(Head::Branch(branch.into())),
             health: Health::Healthy,
+            locked: None,
         }
     }
 
