@@ -56,8 +56,46 @@ pub fn hand_off(dir: &Path) -> Result<()> {
             .with_context(|| format!("could not write {}", Path::new(&file).display()));
     }
     println!("{}", dir.display());
-    eprintln!(
-        "jumar: add `eval \"$(jumar init zsh)\"` (or bash/fish) to your shell config to cd on Enter"
-    );
+    let shell = parent_command().or_else(|| std::env::var("SHELL").ok());
+    eprintln!("jumar: {} to cd on Enter", setup_hint(shell.as_deref()));
     Ok(())
+}
+
+/// `$SHELL` is the login shell, which need not be the one jumar was started from.
+fn parent_command() -> Option<String> {
+    let output = std::process::Command::new("ps")
+        .args([
+            "-o",
+            "comm=",
+            "-p",
+            &std::os::unix::process::parent_id().to_string(),
+        ])
+        .output()
+        .ok()?;
+    Some(String::from_utf8_lossy(&output.stdout).trim().to_owned()).filter(|s| !s.is_empty())
+}
+
+fn setup_hint(shell: Option<&str>) -> &'static str {
+    let name = shell.and_then(|s| Path::new(s).file_name()?.to_str());
+    match name.map(|n| n.trim_start_matches('-')) {
+        Some("fish") => "add `jumar init fish | source` to ~/.config/fish/config.fish",
+        Some("bash") => "add `eval \"$(jumar init bash)\"` to ~/.bashrc",
+        Some("zsh") => "add `eval \"$(jumar init zsh)\"` to ~/.zshrc",
+        _ => "set up `jumar init <bash|zsh|fish>` in your shell config",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn setup_hint_should_use_fish_syntax_for_fish() {
+        assert!(setup_hint(Some("/opt/homebrew/bin/fish")).contains("| source"));
+    }
+
+    #[test]
+    fn setup_hint_should_name_all_shells_when_unknown() {
+        assert!(setup_hint(None).contains("<bash|zsh|fish>"));
+    }
 }
