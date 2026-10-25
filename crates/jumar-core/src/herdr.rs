@@ -27,6 +27,22 @@ pub struct Workspace {
     pub checkout: PathBuf,
     /// Agents running in any pane of the workspace.
     pub agents: usize,
+    /// herdr's combined state of those agents.
+    pub status: AgentStatus,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AgentStatus {
+    Working,
+    /// Waiting at an approval or question.
+    Blocked,
+    Done,
+    Idle,
+    /// No agent, or one herdr cannot classify.
+    #[default]
+    #[serde(other)]
+    Unknown,
 }
 
 /// Which worktrees herdr has open, from one session snapshot.
@@ -191,6 +207,8 @@ struct Snapshot {
 #[derive(Deserialize)]
 struct SnapshotWorkspace {
     workspace_id: String,
+    #[serde(default)]
+    agent_status: AgentStatus,
     worktree: Option<SnapshotWorktree>,
 }
 
@@ -226,6 +244,7 @@ pub fn parse_snapshot(text: &str) -> Result<State> {
                     .filter(|a| a.workspace_id == workspace.workspace_id)
                     .count(),
                 id: workspace.workspace_id,
+                status: workspace.agent_status,
                 // jumar's paths are canonical; herdr's may go through a symlink.
                 checkout: fs::canonicalize(&checkout).unwrap_or(checkout),
             })
@@ -262,7 +281,7 @@ mod tests {
     const SNAPSHOT: &str = r#"{"id":"cli:api:snapshot","result":{"type":"session_snapshot",
         "snapshot":{"version":"0.9.5","workspaces":[
             {"workspace_id":"wA","label":"k7","worktree":{"checkout_path":"/nonexistent/k7"}},
-            {"workspace_id":"wB","label":"test","worktree":{"checkout_path":"/nonexistent/test"}},
+            {"workspace_id":"wB","label":"test","agent_status":"working","worktree":{"checkout_path":"/nonexistent/test"}},
             {"workspace_id":"wC","label":"scratch"}],
         "agents":[{"workspace_id":"wB","pane_id":"wB:p1"},{"workspace_id":"wB","pane_id":"wB:p2"}]}}}"#;
 
@@ -277,6 +296,24 @@ mod tests {
 
         let test = state.workspace_for(Path::new("/nonexistent/test")).unwrap();
         assert_eq!((test.id.as_str(), test.agents), ("wB", 2));
+    }
+
+    #[test]
+    fn parse_snapshot_should_read_workspace_agent_status() {
+        let state = parse_snapshot(SNAPSHOT).unwrap();
+
+        let test = state.workspace_for(Path::new("/nonexistent/test")).unwrap();
+        assert_eq!(test.status, AgentStatus::Working);
+    }
+
+    #[test]
+    fn parse_snapshot_should_treat_unrecognised_status_as_unknown() {
+        let snapshot = SNAPSHOT.replace("\"working\"", "\"thinking\"");
+
+        let state = parse_snapshot(&snapshot).unwrap();
+
+        let test = state.workspace_for(Path::new("/nonexistent/test")).unwrap();
+        assert_eq!(test.status, AgentStatus::Unknown);
     }
 
     #[test]

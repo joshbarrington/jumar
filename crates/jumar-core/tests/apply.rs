@@ -107,6 +107,7 @@ impl Fixture {
                 id: "wB".into(),
                 checkout: self.worktrees[index].path.clone(),
                 agents,
+                status: herdr::AgentStatus::default(),
             }],
         });
     }

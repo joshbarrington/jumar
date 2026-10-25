@@ -6,7 +6,7 @@ use std::thread;
 
 use jumar_core::config::Tool;
 use jumar_core::editor::{Editor, Entry, Mode};
-use jumar_core::herdr::{self, Herdr};
+use jumar_core::herdr::{self, AgentStatus, Herdr};
 use jumar_core::inspect::inspect_all;
 use jumar_core::model::{Health, Worktree};
 use jumar_core::plan::Line as BufferLine;
@@ -188,7 +188,18 @@ impl Buffer {
             .and_then(|state| state.workspace_for(&worktree.path))
         {
             Some(workspace) if workspace.agents > 0 => {
-                Span::raw(format!("◆ {} agent(s)", workspace.agents)).fg(theme::YELLOW)
+                let (icon, label, color) = match workspace.status {
+                    AgentStatus::Working => ("●", "working", theme::YELLOW),
+                    AgentStatus::Blocked => ("▲", "blocked", theme::ORANGE),
+                    AgentStatus::Done => ("✓", "done", theme::GREEN),
+                    AgentStatus::Idle => ("◆", "idle", theme::GRAY),
+                    AgentStatus::Unknown => ("◆", "agent", theme::GRAY),
+                };
+                let count = match workspace.agents {
+                    1 => String::new(),
+                    n => format!(" ×{n}"),
+                };
+                Span::raw(format!("{icon} {label}{count}")).fg(color)
             }
             Some(_) => Span::raw("◇ open").fg(theme::GRAY),
             None => Span::raw(""),
