@@ -8,15 +8,9 @@ Manage git worktrees from an editable, vim-style buffer, in the spirit of
 [oil.nvim](https://github.com/stevearc/oil.nvim). Delete a line to remove a worktree, edit a
 name to rename it, add a line to create one, then `:w` to review and apply.
 
-```
-    NAME          BRANCH       STATUS          AGE   SOURCE   HERDR
- app  ~/github/app
-    (main)        main         clean           2h
- ✓  fix-login     fix-login    clean           3d    claude
- ↑  search        search       ↑2              5h    claude   ● working
- !  new-api       new-api      3 changed       20m   herdr    ▲ blocked
- ↑  old-spike     old-spike    upstream gone   2mo   claude
-```
+<p align="center">
+  <img src="assets/screenshot.png" alt="jumar listing eight worktrees of one repo, with columns for name, branch, status, age, source and herdr agent state">
+</p>
 
 jumar finds Claude Code and herdr worktrees out of the box, plus every other worktree of the
 repos it finds. Before anything is removed it checks what you would lose, and it runs in the
