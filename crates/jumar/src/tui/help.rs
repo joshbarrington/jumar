@@ -6,34 +6,20 @@ use ratatui::widgets::Paragraph;
 
 use super::{mode_tag, pad, popup, theme, width};
 
-const SECTIONS: [(&str, &[(&str, &str)]); 5] = [
-    (
-        "Move",
-        &[
-            ("j k", "down, up (counts work: 3j)"),
-            ("gg G", "first, last line (5G goes to line 5)"),
-            ("h l w b 0 $", "move within the name"),
-            ("/", "filter by name, repo, source or branch"),
-        ],
-    ),
+const SECTIONS: [(&str, &[(&str, &str)]); 4] = [
     (
         "Edit",
         &[
-            ("dd", "remove the worktree"),
-            (
-                "v V",
-                "select lines; d removes them, o jumps to the other end",
-            ),
-            ("cw ciw x i a A I", "rename it"),
+            ("/", "filter by name, repo, source or branch"),
+            ("dd", "remove the worktree (v V then d for several)"),
+            ("cw", "rename it"),
             ("o O", "create one: name, repo/name or name@base"),
-            ("u Ctrl-r", "undo, redo"),
         ],
     ),
     (
         "Apply",
         &[
             (":w", "review and apply changes"),
-            (":wq :q :q!", "apply and quit, quit, discard and quit"),
             (
                 "y n f D",
                 "in the review: apply, back, force, toggle branch deletion",

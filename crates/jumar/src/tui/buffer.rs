@@ -303,10 +303,7 @@ impl Buffer {
             Mode::Filter => spans.push(Span::raw(format!("/{}", self.editor.filter()))),
             Mode::Visual => {
                 let selected = self.selected().count();
-                spans.push(
-                    Span::raw(format!("{selected} selected  d delete  o other end"))
-                        .fg(theme::GRAY),
-                );
+                spans.push(Span::raw(format!("{selected} selected  d delete")).fg(theme::GRAY));
             }
             Mode::Normal | Mode::Insert => {
                 if self.editor.is_leader_pending() {
