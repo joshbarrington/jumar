@@ -326,10 +326,12 @@ impl Buffer {
                 frame.set_cursor_position((status.x + to_u16(prompt_end), status.y));
             }
             Mode::Normal | Mode::Visual | Mode::Insert => {
-                if let (Some(pos), Some(line)) = (cursor_pos, cursor_line) {
+                // A list too short to show the cursor's line, such as a 0-row pane while
+                // a split opens, leaves the cursor hidden.
+                let y = cursor_line.and_then(|line| line.checked_sub(scroll));
+                if let (Some(pos), Some(y)) = (cursor_pos, y.filter(|y| *y < height)) {
                     let before: String = rows[pos].name.chars().take(col).collect();
                     let x = width(INDENT) + MARK_WIDTH + width(&before);
-                    let y = line - scroll;
                     frame.set_cursor_position((list.x + to_u16(x), list.y + to_u16(y)));
                 }
             }
@@ -481,4 +483,44 @@ fn mark(result: Option<&InspectResult>) -> Span<'static> {
         Some(Ok(inspection)) => super::tier_color(inspection.tier),
     };
     Span::raw(format::tier_mark(result)).fg(color)
+}
+
+#[cfg(test)]
+mod tests {
+    use jumar_core::model::Head;
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    use super::*;
+
+    fn buffer() -> Buffer {
+        let worktree = Worktree {
+            path: PathBuf::from("/nonexistent/app/.claude/worktrees/feat"),
+            repo: PathBuf::from("/nonexistent/app"),
+            source: Some("claude".into()),
+            head: Some(Head::Branch("feat".into())),
+            health: Health::Healthy,
+            locked: None,
+            main: false,
+            default_branch: None,
+        };
+        let scan = Scan {
+            worktrees: vec![worktree],
+            warnings: Vec::new(),
+        };
+        Buffer::new(scan, &[])
+    }
+
+    #[test]
+    fn render_should_not_panic_in_tiny_terminals() {
+        let mut buffer = buffer();
+        for width in 0..12 {
+            for height in 0..12 {
+                let mut terminal = Terminal::new(TestBackend::new(width, height))
+                    .unwrap_or_else(|err| panic!("no terminal at {width}x{height}: {err}"));
+                let drawn = terminal.draw(|frame| buffer.render(frame, true, false));
+                assert!(drawn.is_ok(), "draw failed at {width}x{height}");
+            }
+        }
+    }
 }
