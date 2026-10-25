@@ -357,8 +357,8 @@ impl Editor {
     }
 
     fn context_selection(&mut self) -> Option<Action> {
-        let ids: Vec<EntryId> = self
-            .take_selection()?
+        let (_, rows) = self.take_selection()?;
+        let ids: Vec<EntryId> = rows
             .into_iter()
             .filter_map(|row| match self.lines[row] {
                 Line::Existing { id, .. } => Some(id),
@@ -368,16 +368,16 @@ impl Editor {
         (!ids.is_empty()).then_some(Action::Context(ids))
     }
 
-    /// Ends visual mode, returning the visible lines it selected.
-    fn take_selection(&mut self) -> Option<Vec<usize>> {
+    /// Ends visual mode, returning where the selection starts and the visible lines in it.
+    fn take_selection(&mut self) -> Option<(usize, Vec<usize>)> {
         let (first, last) = self.selection()?;
         self.mode = Mode::Normal;
-        Some(
-            self.visible()
-                .into_iter()
-                .filter(|row| (first..=last).contains(row))
-                .collect(),
-        )
+        let rows = self
+            .visible()
+            .into_iter()
+            .filter(|row| (first..=last).contains(row))
+            .collect();
+        Some((first, rows))
     }
 
     fn insert(&mut self, key: Key) {
@@ -656,10 +656,9 @@ impl Editor {
     }
 
     fn delete_selection(&mut self) {
-        let Some(selected) = self.take_selection() else {
+        let Some((first, selected)) = self.take_selection() else {
             return;
         };
-        let first = selected.first().copied().unwrap_or(self.row);
         let targets = self.deletable(&selected);
         if targets.is_empty() {
             return;

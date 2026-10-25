@@ -17,20 +17,40 @@ trap 'rm -rf "$DIR"' EXIT
 
 sq() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
 
-# jumar writes an empty pick however it exits; this fallback covers it being killed.
-CMD="$(sq "$JUMAR") pick --output $(sq "$OUT"); [ -e $(sq "$OUT") ] || : > $(sq "$OUT")"
+CMD="$(sq "$JUMAR") pick --output $(sq "$OUT")"
 
+# Waits until jumar writes its pick or the overlay is gone (closed by the user, or jumar
+# killed), then prints the pick if there is one. "$@" checks the overlay is still open.
 wait_for_pick() {
-    while [ ! -e "$OUT" ]; do
+    while [ ! -e "$OUT" ] && "$@"; do
         sleep 0.2
     done
-    cat "$OUT"
+    if [ -e "$OUT" ]; then
+        cat "$OUT"
+    fi
+}
+
+pane_id() {
+    grep -o '"pane_id":"[^"]*"' | head -1 | cut -d'"' -f4
+}
+
+herdr_pane_open() {
+    herdr pane get "$1" >/dev/null 2>&1
+}
+
+wezterm_pane_open() {
+    wezterm cli list --format json 2>/dev/null | grep "\"pane_id\": $1," >/dev/null
 }
 
 if [ "${HERDR_ENV:-}" = 1 ] && command -v herdr >/dev/null 2>&1; then
-    if herdr plugin pane open --plugin joshbarrington.jumar --entrypoint pick \
-        --placement overlay --cwd "$PWD" --env "JUMAR_PICK_OUTPUT=$OUT" --focus >/dev/null 2>&1; then
-        wait_for_pick
+    if opened=$(herdr plugin pane open --plugin joshbarrington.jumar --entrypoint pick \
+        --placement overlay --cwd "$PWD" --env "JUMAR_PICK_OUTPUT=$OUT" --focus 2>/dev/null); then
+        pane=$(printf '%s' "$opened" | pane_id)
+        if [ -n "$pane" ]; then
+            wait_for_pick herdr_pane_open "$pane"
+        else
+            wait_for_pick true
+        fi
         exit 0
     fi
     # Without jumar's herdr plugin installed, take over the agent's pane with a zoomed split.
@@ -38,28 +58,29 @@ if [ "${HERDR_ENV:-}" = 1 ] && command -v herdr >/dev/null 2>&1; then
         echo "error: herdr pane split failed: $split" >&2
         exit 1
     }
-    pane=$(printf '%s' "$split" | grep -o '"pane_id":"[^"]*"' | head -1 | cut -d'"' -f4)
+    pane=$(printf '%s' "$split" | pane_id)
     if [ -z "$pane" ]; then
         echo "error: herdr pane split returned no pane id: $split" >&2
         exit 1
     fi
     herdr pane zoom "$pane" --on >/dev/null 2>&1 || true
-    herdr pane run "$pane" "sh -c $(sq "$CMD")" >/dev/null
-    wait_for_pick
+    herdr pane run "$pane" "$CMD; exit" >/dev/null
+    wait_for_pick herdr_pane_open "$pane"
     herdr pane close "$pane" >/dev/null 2>&1 || true
     exit 0
 fi
 
 if [ -n "${TMUX:-}" ] && command -v tmux >/dev/null 2>&1; then
-    tmux display-popup -E -w 90% -h 90% -d "$PWD" "sh -c $(sq "$CMD")"
-    wait_for_pick
+    # The popup blocks until jumar exits or the user closes it.
+    tmux display-popup -E -w 90% -h 90% -d "$PWD" "$CMD" || true
+    wait_for_pick false
     exit 0
 fi
 
 if [ -n "${WEZTERM_PANE:-}" ] && command -v wezterm >/dev/null 2>&1; then
-    wezterm cli split-pane --bottom --percent 80 --pane-id "$WEZTERM_PANE" --cwd "$PWD" \
-        -- sh -c "$CMD" >/dev/null
-    wait_for_pick
+    pane=$(wezterm cli split-pane --bottom --percent 80 --pane-id "$WEZTERM_PANE" --cwd "$PWD" \
+        -- sh -c "$CMD")
+    wait_for_pick wezterm_pane_open "$pane"
     exit 0
 fi
 

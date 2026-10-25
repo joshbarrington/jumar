@@ -36,7 +36,7 @@ pub fn describe<'a>(use_: Use, picked: impl IntoIterator<Item = (&'a Worktree, S
         let _ = writeln!(text, "repo: {}", worktree.repo.display());
         let _ = writeln!(text, "branch: {}", format::branch(worktree.head.as_ref()));
         let _ = writeln!(text, "status: {status}");
-        // A repo without a default branch has no base; the agent falls back to recent log.
+        // Without a default branch, or when git fails, the agent falls back to recent log.
         if let Ok(base) = tool::base(worktree) {
             let _ = writeln!(text, "base: {base}");
         }
@@ -59,8 +59,10 @@ impl Output {
 
     /// Writes `text` to the file, or prints it without one.
     pub fn finish(mut self, text: &str) -> Result<()> {
-        if let Some(path) = self.0.take() {
-            return write(&path, text);
+        if let Some(path) = &self.0 {
+            write(path, text)?;
+            self.0 = None;
+            return Ok(());
         }
         print!("{text}");
         Ok(())
