@@ -70,7 +70,7 @@ pub fn render(frame: &mut Frame, tools: &[Tool]) {
         for (key, action) in keys {
             lines.push(Line::from(vec![
                 Span::raw("  "),
-                Span::styled(pad(key, key_width), Style::new().fg(theme::YELLOW)),
+                Span::styled(pad(key, key_width), Style::new().fg(theme::AQUA)),
                 Span::raw("  "),
                 Span::raw(*action),
             ]));
