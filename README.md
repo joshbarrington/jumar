@@ -1,7 +1,3 @@
-<p align="center">
-  <img src="assets/logo.svg" alt="jumar logo: a rope ascender" width="160">
-</p>
-
 # jumar
 
 jumar shows your git worktrees as a text buffer that you edit like a file, in the style of
