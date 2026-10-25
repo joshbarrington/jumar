@@ -226,7 +226,9 @@ impl Buffer {
 
         let selected: HashSet<usize> = self.selected().collect();
         let titles = HEADERS.map(|h| (h.to_owned(), Style::new().fg(theme::GRAY).bold()));
-        frame.render_widget(columns(&Span::raw(""), titles, widths), header);
+        let mut header_widths = widths;
+        header_widths[0] += MARK_WIDTH;
+        frame.render_widget(columns(None, titles, header_widths), header);
         let lines: Vec<Line> = display
             .iter()
             .enumerate()
@@ -371,15 +373,19 @@ fn row_line(row: &Row, widths: [usize; 4]) -> Line<'static> {
         (row.source.to_owned(), Style::new().fg(theme::GRAY)),
         (row.herdr.content.to_string(), row.herdr.style),
     ];
-    columns(&row.mark, cells, widths)
+    columns(Some(&row.mark), cells, widths)
 }
 
-/// The last column is left unpadded.
-fn columns(mark: &Span<'static>, cells: [(String, Style); 5], widths: [usize; 4]) -> Line<'static> {
-    let mut spans = vec![
-        Span::raw(INDENT),
-        Span::raw(pad(&mark.content, MARK_WIDTH)).style(mark.style),
-    ];
+/// The last column is left unpadded. Without a mark, the first cell starts in its slot.
+fn columns(
+    mark: Option<&Span<'static>>,
+    cells: [(String, Style); 5],
+    widths: [usize; 4],
+) -> Line<'static> {
+    let mut spans = vec![Span::raw(INDENT)];
+    if let Some(mark) = mark {
+        spans.push(Span::raw(pad(&mark.content, MARK_WIDTH)).style(mark.style));
+    }
     for (index, (text, style)) in cells.into_iter().enumerate() {
         if index > 0 {
             spans.push(Span::raw(GAP));
