@@ -17,7 +17,7 @@ use ratatui::style::{Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
-use super::{column_width, mode_tag, pad, theme, to_u16, width};
+use super::{column_width, hints, mode_tag, pad, theme, to_u16, width};
 use crate::discover::{self, Scan};
 use crate::format::{self, InspectResult};
 
@@ -29,7 +29,7 @@ pub struct Buffer {
     loading: usize,
     inspections: Receiver<(usize, InspectResult)>,
     scroll: usize,
-    tool_hint: String,
+    tool_hint: Vec<(String, String)>,
     herdr: Option<herdr::State>,
     herdr_updates: Receiver<herdr::State>,
     home: PathBuf,
@@ -99,9 +99,8 @@ impl Buffer {
             scroll: 0,
             tool_hint: tools
                 .iter()
-                .map(|t| format!("{} {}", t.key, t.name))
-                .collect::<Vec<_>>()
-                .join("  "),
+                .map(|t| (t.key.to_string(), t.name.clone()))
+                .collect(),
             herdr: None,
             herdr_updates,
             home: std::env::home_dir().unwrap_or_default(),
@@ -297,21 +296,24 @@ impl Buffer {
             Mode::Command => ("COMMAND", theme::YELLOW),
             Mode::Filter => ("FILTER", theme::AQUA),
         };
-        let mut spans = vec![mode_tag(tag, color), Span::raw(" ")];
+        let mut spans = vec![mode_tag(tag, color)];
         match self.editor.mode() {
-            Mode::Command => spans.push(Span::raw(format!(":{}", self.editor.prompt()))),
-            Mode::Filter => spans.push(Span::raw(format!("/{}", self.editor.filter()))),
+            Mode::Command => spans.push(Span::raw(format!(" :{}", self.editor.prompt()))),
+            Mode::Filter => spans.push(Span::raw(format!(" /{}", self.editor.filter()))),
             Mode::Visual => {
                 let selected = self.selected().count();
-                spans.push(Span::raw(format!("{selected} selected  d delete")).fg(theme::GRAY));
+                spans.push(Span::raw(format!(" {selected} selected")));
+                spans.extend(hints([("d", "delete")]));
             }
             Mode::Normal | Mode::Insert => {
                 if self.editor.is_leader_pending() {
-                    spans.push(Span::raw(self.tool_hint.clone()).fg(theme::GRAY));
+                    spans.extend(hints(
+                        self.tool_hint.iter().map(|(k, n)| (k.as_str(), n.as_str())),
+                    ));
                 } else if let Some(message) = self.editor.message() {
-                    spans.push(Span::raw(message));
+                    spans.push(Span::raw(format!(" {message}")));
                 } else if !self.editor.filter().is_empty() {
-                    spans.push(Span::raw(format!("/{}", self.editor.filter())).fg(theme::GRAY));
+                    spans.push(Span::raw(format!(" /{}", self.editor.filter())).fg(theme::GRAY));
                 }
             }
         }

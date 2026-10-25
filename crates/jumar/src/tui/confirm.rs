@@ -13,7 +13,7 @@ use ratatui::style::{Color, Style, Stylize};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
-use super::{mode_tag, popup, theme, tier_color, to_u16};
+use super::{hints, mode_tag, popup, theme, tier_color, to_u16};
 use crate::format;
 
 type Item = Result<Step, Blocked>;
@@ -131,11 +131,14 @@ impl Confirm {
             lines.extend(details(item, &self.home));
         }
 
-        let footer = Line::from(vec![
-            mode_tag("CONFIRM", theme::YELLOW),
-            Span::raw("  j k select   f force   D delete branch   y apply   n back")
-                .fg(theme::GRAY),
-        ]);
+        let mut footer = vec![mode_tag("CONFIRM", theme::YELLOW)];
+        footer.extend(hints([
+            ("y", "apply"),
+            ("n", "back"),
+            ("f", "force"),
+            ("D", "delete branch"),
+        ]));
+        let footer = Line::from(footer);
         let (list, status) = popup(frame, "review", &lines, &footer);
         let height = usize::from(list.height);
         let offset = (selected_line + 1).saturating_sub(height);
@@ -205,12 +208,12 @@ impl Report {
             let skipped = count(|s| matches!(s, State::Skipped(_)));
             let done = count(|s| matches!(s, State::Done));
             let next = if self.quit_after { "quit" } else { "reload" };
-            Line::from(vec![
+            let mut footer = vec![
                 mode_tag("DONE", if failed > 0 { theme::RED } else { theme::GREEN }),
-                Span::raw(format!(
-                    "  {done} done, {failed} failed, {skipped} skipped. Press any key to {next}"
-                )),
-            ])
+                Span::raw(format!("  {done} done, {failed} failed, {skipped} skipped")),
+            ];
+            footer.extend(hints([("any key", next)]));
+            Line::from(footer)
         };
         let (list, status) = popup(frame, "apply", &lines, &footer);
         let height = usize::from(list.height);

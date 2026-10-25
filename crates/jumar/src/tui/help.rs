@@ -4,7 +4,7 @@ use ratatui::style::{Style, Stylize};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
-use super::{mode_tag, pad, popup, theme, width};
+use super::{hints, mode_tag, pad, popup, theme, width};
 
 const SECTIONS: [(&str, &[(&str, &str)]); 4] = [
     (
@@ -72,10 +72,9 @@ pub fn render(frame: &mut Frame, tools: &[Tool]) {
             ]));
         }
     }
-    let footer = Line::from(vec![
-        mode_tag("HELP", theme::YELLOW),
-        Span::raw("  ? or Esc to close").fg(theme::GRAY),
-    ]);
+    let mut footer = vec![mode_tag("HELP", theme::YELLOW)];
+    footer.extend(hints([("?", "close")]));
+    let footer = Line::from(footer);
     let (list, status) = popup(frame, "keys", &lines, &footer);
     frame.render_widget(Paragraph::new(lines), list);
     frame.render_widget(footer, status);

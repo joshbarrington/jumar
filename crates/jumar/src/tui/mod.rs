@@ -308,6 +308,22 @@ fn convert(event: KeyEvent) -> Option<Key> {
     })
 }
 
+/// Each key as a chip followed by what it does, after a mode tag.
+fn hints<'a>(keys: impl IntoIterator<Item = (&'a str, &'a str)>) -> Vec<Span<'static>> {
+    keys.into_iter()
+        .flat_map(|(key, action)| {
+            [
+                Span::raw("  "),
+                Span::raw(format!(" {key} "))
+                    .fg(theme::YELLOW)
+                    .bg(theme::BG2)
+                    .bold(),
+                Span::raw(format!(" {action}")).fg(theme::TAN),
+            ]
+        })
+        .collect()
+}
+
 fn mode_tag(tag: &str, color: Color) -> Span<'static> {
     Span::raw(format!(" {tag} "))
         .fg(theme::BG0)
