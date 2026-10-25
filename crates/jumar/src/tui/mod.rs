@@ -78,7 +78,7 @@ impl App {
             if let Screen::Report(report) = &mut self.screen {
                 report.receive();
             }
-            let wants_bar = self.buffer.editor.mode() != Mode::Normal;
+            let wants_bar = !matches!(self.buffer.editor.mode(), Mode::Normal | Mode::Visual);
             if insert_shape != Some(wants_bar) {
                 insert_shape = Some(wants_bar);
                 let shape = if wants_bar {

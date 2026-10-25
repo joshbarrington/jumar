@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver};
@@ -222,6 +223,7 @@ impl Buffer {
             self.scroll.min(top).max((line + 1).saturating_sub(height))
         });
 
+        let selected: HashSet<usize> = self.selected().collect();
         let titles = HEADERS.map(|h| (h.to_owned(), Style::new().dark_gray().bold()));
         frame.render_widget(columns(&Span::raw(""), titles, widths), header);
         let lines: Vec<Line> = display
@@ -239,7 +241,9 @@ impl Buffer {
                 ]),
                 Display::Row(pos) => {
                     let line = row_line(&rows[*pos], widths);
-                    if Some(index) == cursor_line {
+                    if selected.contains(pos) {
+                        line.bg(Color::Indexed(24))
+                    } else if Some(index) == cursor_line {
                         line.bg(Color::Indexed(236))
                     } else {
                         line
@@ -266,7 +270,7 @@ impl Buffer {
             Mode::Command | Mode::Filter => {
                 frame.set_cursor_position((status.x + to_u16(prompt_end), status.y));
             }
-            Mode::Normal | Mode::Insert => {
+            Mode::Normal | Mode::Visual | Mode::Insert => {
                 if let (Some(pos), Some(line)) = (cursor_pos, cursor_line) {
                     let before: String = rows[pos].name.chars().take(col).collect();
                     let x = width(INDENT) + MARK_WIDTH + width(&before);
@@ -284,6 +288,7 @@ impl Buffer {
     fn status_line(&self) -> Line<'_> {
         let (tag, color) = match self.editor.mode() {
             Mode::Normal => ("NORMAL", Color::Blue),
+            Mode::Visual => ("VISUAL", Color::Cyan),
             Mode::Insert => ("INSERT", Color::Green),
             Mode::Command => ("COMMAND", Color::Yellow),
             Mode::Filter => ("FILTER", Color::Magenta),
@@ -292,6 +297,12 @@ impl Buffer {
         match self.editor.mode() {
             Mode::Command => spans.push(Span::raw(format!(":{}", self.editor.prompt()))),
             Mode::Filter => spans.push(Span::raw(format!("/{}", self.editor.filter()))),
+            Mode::Visual => {
+                let selected = self.selected().count();
+                spans.push(
+                    Span::raw(format!("{selected} selected  d delete  o other end")).dark_gray(),
+                );
+            }
             Mode::Normal | Mode::Insert => {
                 if self.editor.is_leader_pending() {
                     spans.push(Span::raw(self.tool_hint.clone()).dark_gray());
@@ -303,6 +314,18 @@ impl Buffer {
             }
         }
         Line::from(spans)
+    }
+
+    /// Positions among the visible rows of the visual selection.
+    fn selected(&self) -> impl Iterator<Item = usize> {
+        let range = self.editor.selection();
+        self.editor
+            .rows()
+            .enumerate()
+            .filter(move |(_, (index, _))| {
+                range.is_some_and(|(first, last)| (first..=last).contains(index))
+            })
+            .map(|(pos, _)| pos)
     }
 
     fn summary(&self) -> Line<'static> {

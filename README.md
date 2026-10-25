@@ -34,6 +34,7 @@ jumar init fish | source
 | `j` `k` `gg` `G` `h` `l` `w` `b` `0` `$` | move (counts work: `3j`, `5G`) |
 | `/` | filter by name, repo, source or branch |
 | `dd` | remove the worktree |
+| `v` `V` | select lines, then `d` to remove them all (`o` jumps to the other end) |
 | `cw` `ciw` `x` `i` `a` `A` `I` | rename it |
 | `o` `O` | create one: `name`, `repo/name`, or `name@base` |
 | `u` `Ctrl-r` | undo, redo |
@@ -44,9 +45,9 @@ jumar init fish | source
 
 `:w` shows every change before anything runs. Removes are graded:
 
-- 🟢 clean and merged or fully pushed: removes the checkout and its branch.
-- 🟡 clean but with commits found nowhere else: keeps the branch (`D` deletes it too).
-- 🔴 uncommitted or untracked changes: needs force (`f`), and lists what would be lost.
+-  (green) clean and merged or fully pushed: removes the checkout and its branch.
+-  (yellow) clean but with commits found nowhere else: keeps the branch (`D` deletes it too).
+-  (red) uncommitted or untracked changes: needs force (`f`), and lists what would be lost.
 
 A rename moves the directory, and renames the branch when it had the same name. Worktrees
 open in a herdr workspace go through herdr; one with a running agent needs force to remove

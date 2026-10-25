@@ -19,6 +19,8 @@ pub enum Key {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
     Normal,
+    /// Line-wise for both `v` and `V`: every line is a whole worktree.
+    Visual,
     Insert,
     Command,
     Filter,
@@ -72,6 +74,8 @@ pub struct Editor {
     lines: Vec<Line>,
     row: usize,
     col: usize,
+    /// The line visual mode started on; the selection runs from here to `row`.
+    anchor: usize,
     mode: Mode,
     pending: Pending,
     count: Option<usize>,
@@ -101,6 +105,7 @@ impl Editor {
             lines,
             row: 0,
             col: 0,
+            anchor: 0,
             mode: Mode::Normal,
             pending: Pending::None,
             count: None,
@@ -130,6 +135,13 @@ impl Editor {
     #[must_use]
     pub fn cursor(&self) -> (usize, usize) {
         (self.row, self.col)
+    }
+
+    /// The selected range of line indices, inclusive, in visual mode. Lines the filter
+    /// hides inside it are not part of the selection.
+    #[must_use]
+    pub fn selection(&self) -> Option<(usize, usize)> {
+        (self.mode == Mode::Visual).then(|| (self.anchor.min(self.row), self.anchor.max(self.row)))
     }
 
     #[must_use]
@@ -174,7 +186,7 @@ impl Editor {
 
     pub fn handle(&mut self, key: Key) -> Option<Action> {
         match self.mode {
-            Mode::Normal => return self.normal(key),
+            Mode::Normal | Mode::Visual => return self.normal(key),
             Mode::Insert => self.insert(key),
             Mode::Command => return self.command(key),
             Mode::Filter => self.filter_key(key),
@@ -197,6 +209,7 @@ impl Editor {
         let count = self.count.take();
         let n = count.unwrap_or(1);
         match (pending, key) {
+            (Pending::None, key) if self.mode == Mode::Visual => self.visual_key(key, count),
             (Pending::None, key) => return self.normal_key(key, count),
             (Pending::Goto, Key::Char('g')) => self.goto(count.map_or(0, |c| c.saturating_sub(1))),
             (Pending::Delete, Key::Char('d')) => self.delete_lines(n),
@@ -245,6 +258,10 @@ impl Editor {
                 self.count = count;
             }
             Key::Char(' ') => self.pending = Pending::Leader,
+            Key::Char('v' | 'V') if self.current_row().is_some() => {
+                self.anchor = self.row;
+                self.mode = Mode::Visual;
+            }
             Key::Char('x') => self.delete_chars(n),
             Key::Char('o') => self.open_line(true),
             Key::Char('O') => self.open_line(false),
@@ -279,6 +296,18 @@ impl Editor {
             _ => {}
         }
         None
+    }
+
+    fn visual_key(&mut self, key: Key, count: Option<usize>) {
+        match key {
+            Key::Char('j' | 'k' | 'G' | 'g') | Key::Up | Key::Down => {
+                self.normal_key(key, count);
+            }
+            Key::Char('o') => std::mem::swap(&mut self.anchor, &mut self.row),
+            Key::Char('d' | 'x' | 'D') => self.delete_selection(),
+            Key::Char('v' | 'V') | Key::Esc | Key::Ctrl('c') => self.mode = Mode::Normal,
+            _ => {}
+        }
     }
 
     fn insert(&mut self, key: Key) {
@@ -510,6 +539,29 @@ impl Editor {
             self.lines.remove(row);
         }
         self.row = targets[0];
+        self.col = 0;
+        self.settle();
+    }
+
+    fn delete_selection(&mut self) {
+        let Some((first, last)) = self.selection() else {
+            return;
+        };
+        self.mode = Mode::Normal;
+        let targets: Vec<usize> = self
+            .visible()
+            .into_iter()
+            .filter(|row| (first..=last).contains(row))
+            .collect();
+        if targets.is_empty() {
+            return;
+        }
+        // Undo returns to where the selection started, as in vim.
+        self.row = first;
+        self.checkpoint();
+        for &row in targets.iter().rev() {
+            self.lines.remove(row);
+        }
         self.col = 0;
         self.settle();
     }
@@ -810,6 +862,50 @@ mod tests {
             ed.lines()[0],
             Line::Existing { id: EntryId(1), .. }
         ));
+    }
+
+    #[test]
+    fn visual_d_should_delete_selected_lines() {
+        assert_eq!(texts_after(&["a", "b", "c", "d"], "jVjd"), ["a", "d"]);
+    }
+
+    #[test]
+    fn visual_should_select_upwards() {
+        assert_eq!(texts_after(&["a", "b", "c", "d"], "Gvkkd"), ["a"]);
+    }
+
+    #[test]
+    fn visual_o_should_swap_ends() {
+        let mut ed = editor(&["a", "b", "c", "d"]);
+        feed(&mut ed, "jVjok");
+
+        assert_eq!(ed.selection(), Some((0, 2)));
+    }
+
+    #[test]
+    fn visual_should_take_counts() {
+        assert_eq!(texts_after(&["a", "b", "c", "d"], "V2jx"), ["d"]);
+    }
+
+    #[test]
+    fn visual_delete_should_skip_lines_hidden_by_the_filter() {
+        let mut ed = editor(&["ab", "c", "ad"]);
+        feed(&mut ed, "/a<CR>Vjd/<Esc>");
+
+        assert_eq!(texts(&ed), ["c"]);
+    }
+
+    #[test]
+    fn visual_esc_should_leave_lines_alone() {
+        assert_eq!(texts_after(&ABC, "Vj<Esc>d"), ABC);
+    }
+
+    #[test]
+    fn visual_delete_should_undo_in_one_step() {
+        assert_eq!(
+            texts_after(&["a", "b", "c", "d"], "jVjdu"),
+            ["a", "b", "c", "d"]
+        );
     }
 
     #[test]
