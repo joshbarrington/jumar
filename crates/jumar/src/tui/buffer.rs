@@ -364,7 +364,7 @@ fn group<'a>(rows: &[Row<'a>]) -> Vec<Display<'a>> {
 fn row_line(row: &Row, widths: [usize; 4]) -> Line<'static> {
     let cells = [
         (row.name.to_owned(), row.style.add_modifier(Modifier::BOLD)),
-        (row.branch.clone(), Style::new().fg(theme::PURPLE)),
+        (row.branch.clone(), Style::new().fg(theme::TAN)),
         (row.state.clone(), row.state_style),
         (row.source.to_owned(), Style::new().fg(theme::GRAY)),
         (row.herdr.content.to_string(), row.herdr.style),
