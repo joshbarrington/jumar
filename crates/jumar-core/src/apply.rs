@@ -1,8 +1,10 @@
-use std::path::{Path, PathBuf};
+use std::fs;
+use std::path::{Component, Path, PathBuf};
+use std::process::{Command, Output, Stdio};
 use std::sync::mpsc::{self, Receiver};
 use std::thread;
 
-use crate::config::Source;
+use crate::config::{Config, Source};
 use crate::discovery;
 use crate::git;
 use crate::herdr::{self, Herdr};
@@ -76,6 +78,10 @@ pub struct Create {
     pub branch: String,
     pub start: Start,
     pub open_in_herdr: bool,
+    /// Files copied from the main checkout, relative to it.
+    pub copy: Vec<PathBuf>,
+    /// Shell commands run in the new worktree once it exists.
+    pub on_create: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -100,6 +106,8 @@ pub struct Context<'a> {
     pub sources: &'a [Source],
     pub default_source: &'a str,
     pub home: &'a Path,
+    /// For each repo's `copy` and `on_create`.
+    pub config: &'a Config,
     /// herdr's open workspaces, when a herdr server answered.
     pub herdr: Option<&'a herdr::State>,
 }
@@ -223,14 +231,44 @@ fn create(
             None => default_base(context, &repo).map_err(git_err)?,
         })
     };
+    let setup = context.config.repo(&repo, context.home);
+    let copy = match setup {
+        Some(setup) => matching_files(&repo, &setup.copy)?,
+        None => Vec::new(),
+    };
     Ok(Create {
-        repo,
         source: source.name.clone(),
         path,
         branch: name.to_owned(),
         start,
         open_in_herdr: source.opens_in_herdr() && context.herdr.is_some(),
+        copy,
+        on_create: setup.map(|s| s.on_create.clone()).unwrap_or_default(),
+        repo,
     })
+}
+
+/// Files in `repo` matching `patterns`, relative to it. Git's own directory and paths
+/// outside the checkout are never matched.
+fn matching_files(repo: &Path, patterns: &[String]) -> Result<Vec<PathBuf>, String> {
+    let base = glob::Pattern::escape(&repo.to_string_lossy());
+    let mut files: Vec<PathBuf> = Vec::new();
+    for pattern in patterns {
+        let paths = glob::glob(&format!("{base}/{pattern}"))
+            .map_err(|err| format!("invalid copy pattern `{pattern}`: {err}"))?;
+        for path in paths.flatten() {
+            let Ok(relative) = path.strip_prefix(repo) else {
+                continue;
+            };
+            let inside = relative
+                .components()
+                .all(|c| matches!(c, Component::Normal(_)) && c.as_os_str() != ".git");
+            if inside && path.is_file() && !files.iter().any(|f| f == relative) {
+                files.push(relative.to_path_buf());
+            }
+        }
+    }
+    Ok(files)
 }
 
 fn split_target(target: &str) -> (Option<&str>, &str) {
@@ -365,12 +403,66 @@ pub fn execute(step: &Step, herdr: &Herdr) -> Result<()> {
                     git::run(&create.repo, &args)?;
                 }
             }
+            // The worktree exists now, so it opens in herdr even when its setup failed.
+            let setup = set_up(create);
             if create.open_in_herdr {
                 herdr.open(&create.path, &create.repo, false)?;
             }
+            setup?;
         }
     }
     Ok(())
+}
+
+fn set_up(create: &Create) -> Result<()> {
+    for relative in &create.copy {
+        let to = create.path.join(relative);
+        // A tracked file is already checked out.
+        if to.exists() {
+            continue;
+        }
+        let copied = to
+            .parent()
+            .map_or(Ok(()), fs::create_dir_all)
+            .and_then(|()| fs::copy(create.repo.join(relative), &to));
+        copied.map_err(|source| Error::Copy {
+            path: relative.clone(),
+            source,
+        })?;
+    }
+    for command in &create.on_create {
+        let failed = |output: String| Error::Setup {
+            command: command.clone(),
+            output,
+        };
+        let output = Command::new("sh")
+            .args(["-c", command])
+            .current_dir(&create.path)
+            .env("JUMAR_REPO", &create.repo)
+            .env("JUMAR_WORKTREE", &create.path)
+            .stdin(Stdio::null())
+            .output()
+            .map_err(|err| failed(err.to_string()))?;
+        if !output.status.success() {
+            return Err(failed(last_lines(&output)));
+        }
+    }
+    Ok(())
+}
+
+/// The end of a failed command's stderr, or of its stdout when stderr is empty, on one line.
+fn last_lines(output: &Output) -> String {
+    let stream = if output.stderr.trim_ascii().is_empty() {
+        &output.stdout
+    } else {
+        &output.stderr
+    };
+    let text = String::from_utf8_lossy(stream);
+    let lines: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).collect();
+    match lines.len() {
+        0 => format!("exited with {}", output.status),
+        n => lines[n.saturating_sub(3)..].join("; "),
+    }
 }
 
 /// Runs `steps` one at a time on a background thread, in order, sending each result

@@ -397,6 +397,17 @@ fn details(item: &Item, home: &Path) -> Vec<Line<'static>> {
                     Start::From(base) => format!("new {} from {base}", create.branch),
                 },
             ));
+            if !create.copy.is_empty() {
+                let files: Vec<String> = create
+                    .copy
+                    .iter()
+                    .map(|f| f.display().to_string())
+                    .collect();
+                lines.push(field("copy", files.join(", ")));
+            }
+            for command in &create.on_create {
+                lines.push(field("run", command.clone()));
+            }
             if create.open_in_herdr {
                 lines.push(field("herdr", "opens it in a new workspace".into()));
             }

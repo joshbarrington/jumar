@@ -39,6 +39,14 @@ pub enum Error {
     Herdr(String),
     #[error("{} has no default branch (no origin/HEAD, main or master)", .0.display())]
     NoDefaultBranch(PathBuf),
+    #[error("could not copy {}: {source}", path.display())]
+    Copy {
+        path: PathBuf,
+        #[source]
+        source: io::Error,
+    },
+    #[error("`{command}` failed in the new worktree: {output}")]
+    Setup { command: String, output: String },
     #[error("path is not valid UTF-8: {}", .0.display())]
     NonUtf8Path(PathBuf),
 }

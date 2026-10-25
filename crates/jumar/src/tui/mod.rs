@@ -245,6 +245,7 @@ impl App {
                         sources,
                         default_source: self.env.config.default_create_source().unwrap_or(fallback),
                         home: &self.env.home,
+                        config: &self.env.config,
                         herdr: herdr.as_ref(),
                     };
                     let items = apply::prepare(&context, operations);

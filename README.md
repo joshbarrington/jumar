@@ -160,6 +160,8 @@ refresh_seconds = 5   # re-read statuses and herdr agents; 0 turns it off
 [[repo]]
 path = "~/work/app"
 default_branch = "develop"   # instead of origin/HEAD, main or master
+copy = [".env", "config/*.local.toml"]
+on_create = ["npm install"]
 
 [[source]]
 name = "work"
@@ -181,6 +183,17 @@ While jumar is open it refreshes every `refresh_seconds`. It adds and drops work
 came or went, but leaves the list alone while you have unsaved edits. A repo's
 `default_branch` decides what counts as merged, and is where `{base}` and new worktrees
 start from.
+
+### Setting up new worktrees
+
+A new worktree has only the files git tracks. A repo's `copy` lists files to bring over
+from its main checkout: globs relative to it, copied when they exist, and skipped when the
+worktree already has the file. Then each `on_create` command runs with `sh -c` in the new
+worktree, with `JUMAR_REPO` set to the main checkout and `JUMAR_WORKTREE` to the new one.
+The confirm screen lists the files and commands before anything runs. If a command fails,
+the worktree is kept and the report shows the end of its output.
+
+### Sources
 
 A `[[source]]` named `claude` or `herdr` replaces that preset's globs (empty disables it),
 and its `create_path` and `open_in_herdr` when given. `create_path` can use `{repo}`,

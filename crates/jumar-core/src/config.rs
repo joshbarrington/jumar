@@ -8,6 +8,10 @@
 //! [[repo]]
 //! path = "~/work/app"
 //! default_branch = "develop"
+//! # After creating a worktree: copy these files from the main checkout when present
+//! # (globs, relative to it), then run each command with `sh -c` in the new worktree.
+//! copy = [".env", "config/*.local.toml"]
+//! on_create = ["npm install"]
 //!
 //! [[source]]
 //! name = "work"
@@ -97,6 +101,10 @@ pub struct Repo {
     /// The main checkout; a leading `~` is the home directory.
     pub path: String,
     pub default_branch: Option<String>,
+    #[serde(default)]
+    pub copy: Vec<String>,
+    #[serde(default)]
+    pub on_create: Vec<String>,
 }
 
 impl Repo {
@@ -213,17 +221,19 @@ impl Config {
         self.repos.iter().map(|r| r.expanded_path(home)).collect()
     }
 
+    /// The `[[repo]]` whose main checkout is `repo`.
+    #[must_use]
+    pub fn repo(&self, repo: &Path, home: &Path) -> Option<&Repo> {
+        self.repos.iter().find(|r| {
+            let path = r.expanded_path(home);
+            std::fs::canonicalize(&path).unwrap_or(path) == repo
+        })
+    }
+
     /// The configured default branch of the repo whose main checkout is `repo`.
     #[must_use]
     pub fn default_branch(&self, repo: &Path, home: &Path) -> Option<&str> {
-        self.repos
-            .iter()
-            .find(|r| {
-                let path = r.expanded_path(home);
-                std::fs::canonicalize(&path).unwrap_or(path) == repo
-            })?
-            .default_branch
-            .as_deref()
+        self.repo(repo, home)?.default_branch.as_deref()
     }
 }
 
@@ -470,6 +480,18 @@ mod tests {
     #[test]
     fn refresh_interval_should_be_off_when_zero() {
         assert_eq!(parse("refresh_seconds = 0\n").refresh_interval(), None);
+    }
+
+    #[test]
+    fn repo_should_read_setup() {
+        let config = parse("[[repo]]\npath = \"/a\"\ncopy = [\".env\"]\non_create = [\"make\"]\n");
+
+        let repo = config.repo(Path::new("/a"), Path::new("/h")).unwrap();
+
+        assert_eq!(
+            (&repo.copy[..], &repo.on_create[..]),
+            (&[".env".to_owned()][..], &["make".to_owned()][..])
+        );
     }
 
     #[test]

@@ -4,7 +4,7 @@ mod common;
 
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use jumar_core::apply::{self, Blocked, Context, Start, Step};
 use jumar_core::config::Config;
@@ -22,6 +22,7 @@ struct Fixture {
     home: PathBuf,
     worktrees: Vec<Worktree>,
     herdr: Option<herdr::State>,
+    config: Config,
 }
 
 impl Fixture {
@@ -35,6 +36,7 @@ impl Fixture {
             home,
             worktrees: Vec::new(),
             herdr: None,
+            config: Config::default(),
         };
         fx.add("feat");
         let wip = fx.add("wip");
@@ -65,15 +67,21 @@ impl Fixture {
         path
     }
 
+    /// Gives the repo a `[[repo]]` entry with these extra TOML lines.
+    fn set_repo_config(&mut self, lines: &str) {
+        let path = toml::Value::from(self.repo().to_str().unwrap());
+        let text = format!("[[repo]]\npath = {path}\n{lines}\n");
+        self.config = Config::from_toml(&text, Path::new("config.toml")).unwrap();
+    }
+
     fn prepare(&self, operation: Operation) -> Result<Step, Blocked> {
-        let config = Config::default();
-        let sources = config.sources();
         let context = Context {
             worktrees: &self.worktrees,
             tiers: &[],
-            sources,
+            sources: self.config.sources(),
             default_source: "claude",
             home: &self.home,
+            config: &self.config,
             herdr: self.herdr.as_ref(),
         };
         apply::prepare(&context, vec![operation]).remove(0)
@@ -325,6 +333,94 @@ fn execute_create_should_add_worktree_on_new_branch() {
     apply::execute(&Step::Create(create), &Herdr::new()).unwrap();
 
     assert_eq!((path.exists(), fx.has_branch("fix")), (true, true));
+}
+
+#[test]
+fn prepare_create_should_list_matching_files_to_copy() {
+    let mut fx = Fixture::new();
+    fs::write(fx.repo().join(".env"), "KEY=1").unwrap();
+    fs::create_dir_all(fx.repo().join("config")).unwrap();
+    fs::write(fx.repo().join("config/app.local.toml"), "").unwrap();
+    fx.set_repo_config(r#"copy = [".env", "config/*.local.toml", "missing"]"#);
+
+    let create = fx.create("fix", None).unwrap();
+
+    let expected = [
+        PathBuf::from(".env"),
+        PathBuf::from("config/app.local.toml"),
+    ];
+    assert_eq!(create.copy, expected);
+}
+
+#[test]
+fn prepare_create_should_not_copy_from_outside_the_checkout_or_git_dir() {
+    let mut fx = Fixture::new();
+    fs::write(fx.home.join("secret"), "").unwrap();
+    fx.set_repo_config(r#"copy = ["../*", ".git/*"]"#);
+
+    let create = fx.create("fix", None).unwrap();
+
+    assert!(create.copy.is_empty());
+}
+
+#[test]
+fn prepare_create_should_block_invalid_copy_pattern() {
+    let mut fx = Fixture::new();
+    fx.set_repo_config(r#"copy = ["[x"]"#);
+
+    let blocked = fx.create("fix", None).unwrap_err();
+
+    assert!(blocked.reason.contains("invalid copy pattern"));
+}
+
+#[test]
+fn execute_create_should_copy_files_and_run_commands_in_the_worktree() {
+    let mut fx = Fixture::new();
+    fs::write(fx.repo().join(".env"), "KEY=1").unwrap();
+    let check_repo = format!(
+        "test \"$JUMAR_REPO\" = '{}' && touch saw-repo",
+        fx.repo().display()
+    );
+    let check_repo = toml::Value::from(check_repo);
+    fx.set_repo_config(&format!(
+        "copy = [\".env\"]\non_create = [\"touch made\", {check_repo}]"
+    ));
+    let create = fx.create("fix", None).unwrap();
+    let path = create.path.clone();
+
+    apply::execute(&Step::Create(create), &Herdr::new()).unwrap();
+
+    let found = [".env", "made", "saw-repo"].map(|f| path.join(f).exists());
+    assert_eq!(found, [true, true, true]);
+}
+
+#[test]
+fn execute_create_should_report_a_failed_command_after_creating() {
+    let mut fx = Fixture::new();
+    fx.set_repo_config(r#"on_create = ["echo boom >&2; exit 1"]"#);
+    let create = fx.create("fix", None).unwrap();
+    let path = create.path.clone();
+
+    let err = apply::execute(&Step::Create(create), &Herdr::new()).unwrap_err();
+
+    assert!(err.to_string().contains("boom"), "{err}");
+    assert!(path.exists());
+}
+
+#[test]
+fn execute_create_should_keep_tracked_files_over_copies() {
+    let mut fx = Fixture::new();
+    fs::write(fx.repo().join("README"), "tracked").unwrap();
+    git(&fx.repo(), &["add", "README"]);
+    git(&fx.repo(), &["commit", "-q", "-m", "readme"]);
+    fs::write(fx.repo().join("README"), "local edit").unwrap();
+    fx.set_repo_config(r#"copy = ["README"]"#);
+    let create = fx.create("fix", None).unwrap();
+    let path = create.path.clone();
+
+    apply::execute(&Step::Create(create), &Herdr::new()).unwrap();
+
+    assert_eq!(fs::read_to_string(path.join("README")).unwrap(), "tracked");
 }
 
 /// A herdr stand-in that logs its arguments and succeeds without touching anything.
