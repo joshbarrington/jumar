@@ -23,7 +23,7 @@ pub fn run(json: bool) -> Result<()> {
     for warning in &scan.warnings {
         eprintln!("jumar: {warning}");
     }
-    let worktrees: Arc<[Worktree]> = scan.worktrees.into();
+    let worktrees: Arc<[Worktree]> = scan.worktrees.into_iter().filter(|w| !w.main).collect();
     let mut results: Vec<Option<InspectResult>> = std::iter::repeat_with(|| None)
         .take(worktrees.len())
         .collect();

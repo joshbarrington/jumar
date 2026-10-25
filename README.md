@@ -52,6 +52,9 @@ jumar init fish | source
 -  (yellow) clean but with commits found nowhere else: keeps the branch (`D` deletes it too).
 -  (red) uncommitted or untracked changes: needs force (`f`), and lists what would be lost.
 
+Each repo's own checkout is listed first as `(main)`: you can go to it or run tools on it,
+but not remove or rename it.
+
 A rename moves the directory, and renames the branch when it had the same name. Worktrees
 open in a herdr workspace go through herdr; one with a running agent needs force to remove
 and cannot be renamed.

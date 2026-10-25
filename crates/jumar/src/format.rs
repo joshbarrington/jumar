@@ -40,7 +40,11 @@ pub fn tilde(path: &Path, home: &Path) -> String {
 }
 
 pub fn source(worktree: &Worktree) -> &str {
-    worktree.source.as_deref().unwrap_or("other")
+    match &worktree.source {
+        Some(source) => source,
+        None if worktree.main => "",
+        None => "other",
+    }
 }
 
 pub fn branch(head: Option<&Head>) -> String {

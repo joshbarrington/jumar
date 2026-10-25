@@ -52,7 +52,11 @@ pub enum Action {
 pub struct Entry {
     pub name: String,
     pub keywords: String,
+    /// Shown but not deletable or editable, like a repo's main checkout.
+    pub fixed: bool,
 }
+
+const FIXED: &str = "the main checkout cannot be removed or renamed";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Pending {
@@ -75,6 +79,7 @@ struct Snapshot {
 #[derive(Debug)]
 pub struct Editor {
     keywords: Vec<String>,
+    fixed: HashSet<EntryId>,
     original: Vec<Line>,
     lines: Vec<Line>,
     row: usize,
@@ -97,8 +102,12 @@ impl Editor {
     pub fn new(entries: Vec<Entry>) -> Self {
         let mut keywords = Vec::with_capacity(entries.len());
         let mut lines = Vec::with_capacity(entries.len());
+        let mut fixed = HashSet::new();
         for (index, entry) in entries.into_iter().enumerate() {
             keywords.push(entry.keywords.to_lowercase());
+            if entry.fixed {
+                fixed.insert(EntryId(index));
+            }
             lines.push(Line::Existing {
                 id: EntryId(index),
                 name: entry.name,
@@ -106,6 +115,7 @@ impl Editor {
         }
         Self {
             keywords,
+            fixed,
             original: lines.clone(),
             lines,
             row: 0,
@@ -440,6 +450,33 @@ impl Editor {
         self.rows().map(|(index, _)| index).collect()
     }
 
+    fn is_fixed(&self, row: usize) -> bool {
+        matches!(&self.lines[row], Line::Existing { id, .. } if self.fixed.contains(id))
+    }
+
+    /// The current row when it may be edited; a fixed one says so instead.
+    fn editable_row(&mut self) -> Option<usize> {
+        let row = self.current_row()?;
+        if self.is_fixed(row) {
+            self.set_message(FIXED);
+            return None;
+        }
+        Some(row)
+    }
+
+    /// Drops fixed rows from `targets`, saying so when that leaves nothing.
+    fn deletable(&mut self, targets: &[usize]) -> Vec<usize> {
+        let kept: Vec<usize> = targets
+            .iter()
+            .copied()
+            .filter(|&r| !self.is_fixed(r))
+            .collect();
+        if kept.is_empty() && !targets.is_empty() {
+            self.set_message(FIXED);
+        }
+        kept
+    }
+
     fn current_row(&self) -> Option<usize> {
         self.lines
             .get(self.row)
@@ -558,12 +595,16 @@ impl Editor {
         let Some(pos) = visible.iter().position(|&r| r == self.row) else {
             return;
         };
-        let targets = &visible[pos..visible.len().min(pos.saturating_add(n))];
+        let span = &visible[pos..visible.len().min(pos.saturating_add(n))];
+        let targets = self.deletable(span);
+        let Some(&first) = targets.first() else {
+            return;
+        };
         self.checkpoint();
         for &row in targets.iter().rev() {
             self.lines.remove(row);
         }
-        self.row = targets[0];
+        self.row = first;
         self.col = 0;
         self.settle();
     }
@@ -573,11 +614,12 @@ impl Editor {
             return;
         };
         self.mode = Mode::Normal;
-        let targets: Vec<usize> = self
+        let selected: Vec<usize> = self
             .visible()
             .into_iter()
             .filter(|row| (first..=last).contains(row))
             .collect();
+        let targets = self.deletable(&selected);
         if targets.is_empty() {
             return;
         }
@@ -592,6 +634,9 @@ impl Editor {
     }
 
     fn delete_chars(&mut self, n: usize) {
+        if self.editable_row().is_none() {
+            return;
+        }
         let len = self.len();
         if self.col >= len {
             return;
@@ -624,7 +669,7 @@ impl Editor {
     }
 
     fn change(&mut self, start: usize, end: usize) {
-        if self.current_row().is_none() {
+        if self.editable_row().is_none() {
             return;
         }
         self.checkpoint();
@@ -649,7 +694,7 @@ impl Editor {
     }
 
     fn start_insert(&mut self, col: usize) {
-        if self.current_row().is_none() {
+        if self.editable_row().is_none() {
             return;
         }
         self.checkpoint();
@@ -761,6 +806,7 @@ mod tests {
                 .map(|name| Entry {
                     name: (*name).into(),
                     keywords: format!("#{name}#"),
+                    fixed: name.starts_with('('),
                 })
                 .collect(),
         )
@@ -887,6 +933,21 @@ mod tests {
             ed.lines()[0],
             Line::Existing { id: EntryId(1), .. }
         ));
+    }
+
+    #[test]
+    fn dd_should_keep_fixed_line() {
+        assert_eq!(texts_after(&["(main)", "a"], "dd"), ["(main)", "a"]);
+    }
+
+    #[test]
+    fn visual_d_should_skip_fixed_line() {
+        assert_eq!(texts_after(&["(main)", "a", "b"], "Vjd"), ["(main)", "b"]);
+    }
+
+    #[test]
+    fn insert_should_refuse_fixed_line() {
+        assert_eq!(texts_after(&["(main)"], "Ax<Esc>"), ["(main)"]);
     }
 
     #[test]

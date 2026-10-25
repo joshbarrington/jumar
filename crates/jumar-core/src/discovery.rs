@@ -46,8 +46,8 @@ pub fn repos(worktrees: &[Worktree]) -> Vec<PathBuf> {
         .collect()
 }
 
-/// Linked worktrees of `repo` that are not in `known`: ones no source matched, and
-/// prunable ones whose directory is gone.
+/// Worktrees of `repo` that are not in `known`: its main checkout, linked ones no source
+/// matched, and prunable ones whose directory is gone.
 ///
 /// # Errors
 ///
@@ -56,10 +56,9 @@ pub fn scan_repo(repo: &Path, known: &[Worktree]) -> Result<Vec<Worktree>> {
     let known: HashSet<&Path> = known.iter().map(|w| w.path.as_path()).collect();
     let others = git::worktree_list(repo)?
         .into_iter()
-        // The first entry is the main checkout, which jumar never moves or removes.
-        .skip(1)
-        .filter(|entry| !entry.bare)
-        .map(|entry| Worktree {
+        .enumerate()
+        .filter(|(_, entry)| !entry.bare)
+        .map(|(index, entry)| Worktree {
             path: canonical(&entry.path),
             repo: repo.to_path_buf(),
             source: None,
@@ -70,6 +69,7 @@ pub fn scan_repo(repo: &Path, known: &[Worktree]) -> Result<Vec<Worktree>> {
                 Health::Healthy
             },
             locked: entry.locked,
+            main: index == 0,
         })
         .filter(|w| !known.contains(w.path.as_path()))
         .collect();
@@ -99,6 +99,7 @@ fn read_worktree(dir: &Path, source: &str) -> Option<Worktree> {
         head,
         health,
         locked,
+        main: false,
     })
 }
 

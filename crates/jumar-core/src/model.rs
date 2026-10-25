@@ -32,4 +32,7 @@ pub struct Worktree {
     /// Set by `git worktree lock`, holding its reason (empty without one).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub locked: Option<String>,
+    /// The repo's own checkout, listed so it can be opened but never moved or removed.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub main: bool,
 }

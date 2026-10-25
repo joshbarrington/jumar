@@ -147,7 +147,17 @@ fn scan_repo_should_return_only_unmatched_worktrees() {
     let others = scan_repo(&repos(&known)[0], &known).unwrap();
 
     let paths: Vec<_> = others.iter().map(|w| w.path.clone()).collect();
-    assert_eq!(paths, [fx.path("elsewhere/other")]);
+    assert_eq!(paths, [fx.path("github/app"), fx.path("elsewhere/other")]);
+}
+
+#[test]
+fn scan_repo_should_mark_main_checkout() {
+    let fx = Fixture::new();
+    let known = fx.scan(&[CLAUDE]);
+
+    let others = scan_repo(&repos(&known)[0], &known).unwrap();
+
+    assert_eq!((others[0].main, others[1].main), (true, false));
 }
 
 #[test]
@@ -157,7 +167,7 @@ fn scan_repo_should_leave_source_empty() {
 
     let others = scan_repo(&repos(&known)[0], &known).unwrap();
 
-    assert_eq!(others[0].source, None);
+    assert_eq!(others[1].source, None);
 }
 
 #[test]
@@ -168,5 +178,5 @@ fn scan_repo_should_mark_prunable_when_directory_deleted() {
 
     let others = scan_repo(&repos(&known)[0], &known).unwrap();
 
-    assert_eq!(others[0].health, Health::Prunable);
+    assert_eq!(others[1].health, Health::Prunable);
 }

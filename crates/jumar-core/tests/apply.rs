@@ -59,6 +59,7 @@ impl Fixture {
             head: Some(Head::Branch(name.into())),
             health: Health::Healthy,
             locked: None,
+            main: false,
         });
         path
     }

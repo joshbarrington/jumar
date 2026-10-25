@@ -40,6 +40,7 @@ impl Fixture {
             head: Some(Head::Branch(name.into())),
             health: Health::Healthy,
             locked: None,
+            main: false,
         }
     }
 }
@@ -100,6 +101,7 @@ fn inspect_should_keep_default_branch_even_when_checked_out_in_worktree() {
         head: Some(Head::Branch("main".into())),
         health: Health::Healthy,
         locked: None,
+        main: false,
     };
 
     assert_eq!(inspect(&worktree).unwrap().tier, Tier::Unmerged);

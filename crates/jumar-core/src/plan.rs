@@ -80,6 +80,9 @@ pub fn plan(original: &[Worktree], lines: &[Line]) -> Result<Vec<Operation>, Vec
                     errors.push(PlanError::Duplicate { line: line_no });
                     continue;
                 }
+                if worktree.main {
+                    continue;
+                }
                 let name = name.trim();
                 if Some(name) == dir_name(&worktree.path) {
                     continue;
@@ -122,7 +125,7 @@ pub fn plan(original: &[Worktree], lines: &[Line]) -> Result<Vec<Operation>, Vec
     let mut taken: HashSet<PathBuf> = seen.iter().map(|id| original[id.0].path.clone()).collect();
     let mut operations: Vec<Operation> = (0..original.len())
         .map(EntryId)
-        .filter(|id| !seen.contains(id))
+        .filter(|id| !seen.contains(id) && !original[id.0].main)
         .map(|id| Operation::Remove { id })
         .collect();
     for (line, id, worktree, name) in moves {
@@ -194,6 +197,7 @@ mod tests {
             head: Some(Head::Branch(branch.into())),
             health: Health::Healthy,
             locked: None,
+            main: false,
         }
     }
 
@@ -222,6 +226,17 @@ mod tests {
         let ops = plan(&original(), &[keep(1, "b")]).unwrap();
 
         assert_eq!(ops, [Operation::Remove { id: EntryId(0) }]);
+    }
+
+    #[test]
+    fn plan_should_never_remove_or_move_main_checkout() {
+        let mut original = original();
+        original[0].main = true;
+
+        assert_eq!(
+            plan(&original, &[keep(0, "(main)")]),
+            Ok(vec![Operation::Remove { id: EntryId(1) }])
+        );
     }
 
     #[test]

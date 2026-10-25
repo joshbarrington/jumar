@@ -68,7 +68,12 @@ impl Buffer {
         let entries = worktrees
             .iter()
             .map(|w| Entry {
-                name: format::file_name(&w.path),
+                name: if w.main {
+                    "(main)".into()
+                } else {
+                    format::file_name(&w.path)
+                },
+                fixed: w.main,
                 keywords: format!(
                     "{} {} {}",
                     format::file_name(&w.repo),
@@ -338,7 +343,8 @@ impl Buffer {
         if self.loading > 0 {
             parts.push(format!("loading {}", self.loading));
         }
-        parts.push(format!("{} worktrees", self.worktrees.len()));
+        let linked = self.worktrees.iter().filter(|w| !w.main).count();
+        parts.push(format!("{linked} worktrees"));
         if self.editor.is_modified() {
             parts.push("[+]".into());
         }
