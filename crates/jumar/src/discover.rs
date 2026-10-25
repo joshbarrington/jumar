@@ -32,7 +32,7 @@ pub struct Scan {
 }
 
 pub fn scan(env: &Env) -> Result<Scan> {
-    let mut worktrees = scan_sources(&env.config.sources(), &env.home)?;
+    let mut worktrees = scan_sources(env.config.sources(), &env.home)?;
     let mut others = Vec::new();
     let mut warnings = Vec::new();
     for repo in repos(&worktrees) {

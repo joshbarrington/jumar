@@ -78,9 +78,26 @@ command = ["lazygit"]
 mode = "suspend"   # suspend | herdr-workspace | detach
 ```
 
-Sources named `claude` or `herdr` adjust the presets. Tool commands can use `{path}`,
-`{repo}`, `{branch}`, `{base}` (the merge-base with the default branch) and
-`{default_branch}`.
+Sources named `claude` or `herdr` adjust the presets. A tool runs with `<Space>` and its
+key. Tool commands can use `{path}`, `{repo}`, `{branch}`, `{base}` (the merge-base with
+the default branch) and `{default_branch}`.
+
+The `revdiff` and `reviewr` tools are presets. A `[[tool]]` with the same name changes only
+the fields it gives, and `command = []` removes it:
+
+```toml
+[[tool]]
+name = "revdiff"
+key = "v"
+
+[[tool]]
+name = "difftastic"
+key = "t"
+command = ["git", "-c", "diff.external=difft", "diff", "{base}"]
+```
+
+A config with two tools on one key, a new tool without a key or command, or an unknown
+placeholder fails to load with an error naming the tool.
 
 ## License
 

@@ -15,9 +15,10 @@
 //! name = "claude"
 //! globs = ["~/code/*/.claude/worktrees/*"]
 //!
-//! # Run with <Space> then `key` on a worktree. Same name as a preset replaces it; an
-//! # empty command removes it. Placeholders: {path} {repo} {branch} {base}
-//! # {default_branch}, where {base} is the merge-base with the default branch.
+//! # Run with <Space> then `key` on a worktree. Same name as a preset (revdiff, reviewr)
+//! # changes only the fields given; `command = []` removes it. Placeholders: {path}
+//! # {repo} {branch} {base} {default_branch}, where {base} is the merge-base with the
+//! # default branch.
 //! [[tool]]
 //! name = "lazygit"
 //! key = "g"
@@ -29,6 +30,7 @@ use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
+use crate::tool::unknown_placeholder;
 use crate::{Error, Result};
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -50,15 +52,22 @@ impl Source {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Tool {
     pub name: String,
     pub key: char,
-    #[serde(default)]
     pub command: Vec<String>,
-    #[serde(default)]
     pub mode: ToolMode,
+}
+
+/// A `[[tool]]` entry: a new tool, or changes to the preset of the same name.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ToolEntry {
+    name: String,
+    key: Option<char>,
+    command: Option<Vec<String>>,
+    mode: Option<ToolMode>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
@@ -73,24 +82,52 @@ pub enum ToolMode {
     Detach,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct Config {
+struct File {
     #[serde(default, rename = "source")]
-    user_sources: Vec<Source>,
+    sources: Vec<Source>,
     #[serde(default, rename = "tool")]
-    user_tools: Vec<Tool>,
+    tools: Vec<ToolEntry>,
     default_create_source: Option<String>,
+}
+
+/// The presets merged with the user's config file.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Config {
+    sources: Vec<Source>,
+    tools: Vec<Tool>,
+    default_create_source: Option<String>,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            sources: presets(),
+            tools: preset_tools(),
+            default_create_source: None,
+        }
+    }
 }
 
 impl Config {
     /// # Errors
     ///
-    /// Fails on invalid TOML or unknown fields.
+    /// Fails on invalid TOML, unknown fields, or tools that are incomplete, share a key,
+    /// or use an unknown placeholder.
     pub fn from_toml(text: &str, path: &Path) -> Result<Self> {
-        toml::from_str(text).map_err(|source| Error::Config {
+        let file: File = toml::from_str(text).map_err(|source| Error::Config {
             path: path.to_path_buf(),
             source: Box::new(source),
+        })?;
+        let tools = merge_tools(file.tools).map_err(|message| Error::ConfigValue {
+            path: path.to_path_buf(),
+            message,
+        })?;
+        Ok(Self {
+            sources: merge_sources(&file.sources),
+            tools,
+            default_create_source: file.default_create_source,
         })
     }
 
@@ -110,40 +147,16 @@ impl Config {
         }
     }
 
-    /// Presets first, with same-named user sources replacing them, then the rest.
+    /// Presets first, then the user's own sources.
     #[must_use]
-    pub fn sources(&self) -> Vec<Source> {
-        let mut sources = presets();
-        for user in &self.user_sources {
-            match sources.iter_mut().find(|s| s.name == user.name) {
-                Some(preset) => {
-                    preset.globs.clone_from(&user.globs);
-                    if user.create_path.is_some() {
-                        preset.create_path.clone_from(&user.create_path);
-                    }
-                    if user.open_in_herdr.is_some() {
-                        preset.open_in_herdr = user.open_in_herdr;
-                    }
-                }
-                None => sources.push(user.clone()),
-            }
-        }
-        sources
+    pub fn sources(&self) -> &[Source] {
+        &self.sources
     }
 
-    /// Presets first, with same-named user tools replacing them, then the rest. Tools with
-    /// an empty command are dropped.
+    /// Presets first, then the user's own tools.
     #[must_use]
-    pub fn tools(&self) -> Vec<Tool> {
-        let mut tools = preset_tools();
-        for user in &self.user_tools {
-            match tools.iter_mut().find(|t| t.name == user.name) {
-                Some(preset) => *preset = user.clone(),
-                None => tools.push(user.clone()),
-            }
-        }
-        tools.retain(|t| !t.command.is_empty());
-        tools
+    pub fn tools(&self) -> &[Tool] {
+        &self.tools
     }
 
     #[must_use]
@@ -158,6 +171,68 @@ pub fn default_path() -> Option<PathBuf> {
         .map(PathBuf::from)
         .or_else(|| std::env::home_dir().map(|h| h.join(".config")))?;
     Some(base.join("jumar").join("config.toml"))
+}
+
+/// Same-named user sources replace a preset's globs, and its other fields when given.
+fn merge_sources(user_sources: &[Source]) -> Vec<Source> {
+    let mut sources = presets();
+    for user in user_sources {
+        match sources.iter_mut().find(|s| s.name == user.name) {
+            Some(preset) => {
+                preset.globs.clone_from(&user.globs);
+                if user.create_path.is_some() {
+                    preset.create_path.clone_from(&user.create_path);
+                }
+                if user.open_in_herdr.is_some() {
+                    preset.open_in_herdr = user.open_in_herdr;
+                }
+            }
+            None => sources.push(user.clone()),
+        }
+    }
+    sources
+}
+
+/// Same-named entries change only the preset fields they give; an empty command drops the
+/// tool.
+fn merge_tools(entries: Vec<ToolEntry>) -> Result<Vec<Tool>, String> {
+    let mut tools = preset_tools();
+    for entry in entries {
+        if let Some(preset) = tools.iter_mut().find(|t| t.name == entry.name) {
+            preset.key = entry.key.unwrap_or(preset.key);
+            preset.command = entry.command.unwrap_or_else(|| preset.command.clone());
+            preset.mode = entry.mode.unwrap_or(preset.mode);
+            continue;
+        }
+        let (Some(key), Some(command)) = (entry.key, entry.command) else {
+            return Err(format!("tool `{}` needs a key and a command", entry.name));
+        };
+        tools.push(Tool {
+            name: entry.name,
+            key,
+            command,
+            mode: entry.mode.unwrap_or_default(),
+        });
+    }
+    tools.retain(|t| !t.command.is_empty());
+    for (index, tool) in tools.iter().enumerate() {
+        if tool.key.is_whitespace() || tool.key.is_control() {
+            return Err(format!("tool `{}` needs a visible key", tool.name));
+        }
+        if let Some(other) = tools[..index].iter().find(|t| t.key == tool.key) {
+            return Err(format!(
+                "tools `{}` and `{}` both use <Space>{}",
+                other.name, tool.name, tool.key
+            ));
+        }
+        if let Some(name) = tool.command.iter().find_map(|arg| unknown_placeholder(arg)) {
+            return Err(format!(
+                "tool `{}` uses unknown placeholder {{{name}}}",
+                tool.name
+            ));
+        }
+    }
+    Ok(tools)
 }
 
 fn presets() -> Vec<Source> {
@@ -223,14 +298,14 @@ mod tests {
 
     #[test]
     fn sources_should_be_presets_when_config_empty() {
-        assert_eq!(names(&parse("").sources()), ["claude", "herdr"]);
+        assert_eq!(names(parse("").sources()), ["claude", "herdr"]);
     }
 
     #[test]
     fn sources_should_append_user_source_after_presets() {
         let config = parse("[[source]]\nname = \"work\"\nglobs = [\"~/w/*\"]\n");
 
-        assert_eq!(names(&config.sources()), ["claude", "herdr", "work"]);
+        assert_eq!(names(config.sources()), ["claude", "herdr", "work"]);
     }
 
     #[test]
@@ -259,7 +334,9 @@ mod tests {
 
     #[test]
     fn tools_should_include_presets() {
-        let names: Vec<_> = parse("").tools().into_iter().map(|t| t.name).collect();
+        let config = parse("");
+
+        let names: Vec<_> = config.tools().iter().map(|t| t.name.as_str()).collect();
 
         assert_eq!(names, ["revdiff", "reviewr"]);
     }
@@ -273,9 +350,46 @@ mod tests {
 
     #[test]
     fn tools_should_drop_tool_with_empty_command() {
-        let config = parse("[[tool]]\nname = \"reviewr\"\nkey = \"r\"\n");
+        let config = parse("[[tool]]\nname = \"reviewr\"\ncommand = []\n");
 
         assert_eq!(config.tools().len(), 1);
+    }
+
+    #[test]
+    fn tools_should_keep_preset_command_when_only_key_given() {
+        let config = parse("[[tool]]\nname = \"revdiff\"\nkey = \"v\"\n");
+
+        assert_eq!(config.tools()[0].command, ["revdiff", "{base}"]);
+    }
+
+    fn error(text: &str) -> String {
+        Config::from_toml(text, Path::new("c.toml"))
+            .unwrap_err()
+            .to_string()
+    }
+
+    #[test]
+    fn from_toml_should_reject_new_tool_without_command() {
+        assert_eq!(
+            error("[[tool]]\nname = \"x\"\nkey = \"x\"\n"),
+            "invalid config c.toml: tool `x` needs a key and a command"
+        );
+    }
+
+    #[test]
+    fn from_toml_should_reject_tools_sharing_a_key() {
+        assert_eq!(
+            error("[[tool]]\nname = \"x\"\nkey = \"d\"\ncommand = [\"x\"]\n"),
+            "invalid config c.toml: tools `revdiff` and `x` both use <Space>d"
+        );
+    }
+
+    #[test]
+    fn from_toml_should_reject_unknown_placeholder() {
+        assert_eq!(
+            error("[[tool]]\nname = \"x\"\nkey = \"x\"\ncommand = [\"x\", \"{bsae}\"]\n"),
+            "invalid config c.toml: tool `x` uses unknown placeholder {bsae}"
+        );
     }
 
     #[test]

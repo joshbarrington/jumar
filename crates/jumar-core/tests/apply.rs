@@ -65,11 +65,12 @@ impl Fixture {
     }
 
     fn prepare(&self, operation: Operation) -> Result<Step, Blocked> {
-        let sources = Config::default().sources();
+        let config = Config::default();
+        let sources = config.sources();
         let context = Context {
             worktrees: &self.worktrees,
             tiers: &[],
-            sources: &sources,
+            sources,
             default_source: "claude",
             home: &self.home,
             herdr: self.herdr.as_ref(),

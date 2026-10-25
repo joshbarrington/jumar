@@ -41,7 +41,7 @@ pub enum Outcome {
 
 pub fn run() -> Result<Outcome> {
     let env = Env::load()?;
-    let buffer = Buffer::new(discover::scan(&env)?, &env.config.tools());
+    let buffer = Buffer::new(discover::scan(&env)?, env.config.tools());
     let mut app = App {
         env,
         buffer,
@@ -99,7 +99,7 @@ impl App {
                     Screen::Edit => {}
                     Screen::Confirm(confirm) => confirm.render(frame),
                     Screen::Report(report) => report.render(frame),
-                    Screen::Help => help::render(frame, &tools),
+                    Screen::Help => help::render(frame, tools),
                 }
             })?;
 
@@ -153,7 +153,7 @@ impl App {
                 if report.quit_after {
                     return Ok(Some(Effect::Exit(Outcome::Quit)));
                 }
-                self.buffer = Buffer::new(discover::scan(&self.env)?, &self.env.config.tools());
+                self.buffer = Buffer::new(discover::scan(&self.env)?, self.env.config.tools());
                 self.screen = Screen::Edit;
             }
             Screen::Report(_) => {}
@@ -180,7 +180,7 @@ impl App {
             }
             Action::Reload => match discover::scan(&self.env) {
                 Ok(worktrees) => {
-                    self.buffer = Buffer::new(worktrees, &self.env.config.tools());
+                    self.buffer = Buffer::new(worktrees, self.env.config.tools());
                     self.buffer.editor.set_message("reloaded");
                 }
                 Err(err) => editor.set_message(format!("reload failed: {err:#}")),
@@ -218,7 +218,7 @@ impl App {
                     let context = Context {
                         worktrees: &self.buffer.worktrees,
                         tiers: &tiers,
-                        sources: &sources,
+                        sources,
                         default_source: self.env.config.default_create_source().unwrap_or(fallback),
                         home: &self.env.home,
                         herdr: herdr.as_ref(),

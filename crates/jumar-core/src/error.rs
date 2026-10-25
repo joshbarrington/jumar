@@ -15,6 +15,8 @@ pub enum Error {
         #[source]
         source: Box<toml::de::Error>,
     },
+    #[error("invalid config {path}: {message}")]
+    ConfigValue { path: PathBuf, message: String },
     #[error("invalid glob `{pattern}`: {source}")]
     Glob {
         pattern: String,

@@ -49,6 +49,27 @@ pub fn render(command: &[String], worktree: &Worktree) -> Result<Vec<String>> {
     Ok(command.iter().map(|arg| fill(arg, &vars)).collect())
 }
 
+const PLACEHOLDERS: [&str; 5] = ["path", "repo", "branch", "base", "default_branch"];
+
+/// The first `{name}` in `arg` that is not a placeholder. Braces around anything other than
+/// a lowercase name, as in a `jq` filter, are left alone.
+#[must_use]
+pub fn unknown_placeholder(arg: &str) -> Option<&str> {
+    let mut rest = arg;
+    while let Some(start) = rest.find('{') {
+        let after = &rest[start + 1..];
+        let end = after.find('}')?;
+        let name = &after[..end];
+        let looks_like_one =
+            !name.is_empty() && name.chars().all(|c| c.is_ascii_lowercase() || c == '_');
+        if looks_like_one && !PLACEHOLDERS.contains(&name) {
+            return Some(name);
+        }
+        rest = &after[end + 1..];
+    }
+    None
+}
+
 fn fill(arg: &str, vars: &Vars) -> String {
     arg.replace("{path}", vars.path)
         .replace("{repo}", vars.repo)
@@ -80,5 +101,15 @@ mod tests {
             fill("{path} {repo} {branch} {base} {default_branch}", &vars),
             "/w /r fix abc main"
         );
+    }
+
+    #[test]
+    fn unknown_placeholder_should_find_typo() {
+        assert_eq!(unknown_placeholder("--from={bsae}"), Some("bsae"));
+    }
+
+    #[test]
+    fn unknown_placeholder_should_ignore_known_and_non_placeholder_braces() {
+        assert_eq!(unknown_placeholder("{path} {.name} {}"), None);
     }
 }
