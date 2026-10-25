@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/logo.png" alt="jumar logo: a rope ascender clamped on a rope" width="160">
+</p>
+
 # jumar
 
 Manage git worktrees from an editable, vim-style buffer, in the spirit of
