@@ -228,10 +228,16 @@ impl Report {
             let skipped = count(|s| matches!(s, State::Skipped(_)));
             let done = count(|s| matches!(s, State::Done(_)));
             let next = if self.quit_after { "quit" } else { "reload" };
-            let mut footer = vec![
-                mode_tag("DONE", if failed > 0 { theme::RED } else { theme::GREEN }),
-                Span::raw(format!("  {done} done, {failed} failed, {skipped} skipped")),
-            ];
+            let mut footer = vec![mode_tag(
+                "DONE",
+                if failed > 0 { theme::RED } else { theme::GREEN },
+            )];
+            let tally: Vec<String> = [(done, "done"), (failed, "failed"), (skipped, "skipped")]
+                .into_iter()
+                .filter(|&(n, label)| n > 0 || label == "done")
+                .map(|(n, label)| format!("{n} {label}"))
+                .collect();
+            footer.push(Span::raw(format!("  {}", tally.join(", "))));
             footer.extend(hints([("any key", next)]));
             Line::from(footer)
         };
