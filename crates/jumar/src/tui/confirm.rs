@@ -13,7 +13,7 @@ use ratatui::style::{Color, Style, Stylize};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
-use super::{framed, mode_tag, tier_color, to_u16};
+use super::{framed, mode_tag, theme, tier_color, to_u16};
 use crate::format;
 
 type Item = Result<Step, Blocked>;
@@ -120,7 +120,7 @@ impl Confirm {
             let marker = if is_selected { "▸ " } else { "  " };
             let line = describe(item, &self.worktrees, Span::raw(marker));
             lines.push(if is_selected {
-                line.bg(Color::Indexed(236))
+                line.bg(theme::BG1)
             } else {
                 line
             });
@@ -133,7 +133,7 @@ impl Confirm {
         frame.render_widget(Paragraph::new(lines).scroll((to_u16(offset), 0)), list);
 
         let footer = Line::from(vec![
-            mode_tag("CONFIRM", Color::Yellow),
+            mode_tag("CONFIRM", theme::YELLOW),
             Span::raw("  y apply  n back  f force  D toggle branch deletion"),
         ]);
         frame.render_widget(footer, status);
@@ -183,14 +183,14 @@ impl Report {
         let mut lines = Vec::new();
         for (item, state) in self.items.iter().zip(&self.states) {
             let marker = match state {
-                State::Pending => Span::raw("· ").dark_gray(),
-                State::Done => Span::raw("✓ ").green(),
-                State::Failed(_) => Span::raw("✗ ").red(),
-                State::Skipped(_) => Span::raw("- ").dark_gray(),
+                State::Pending => Span::raw("· ").fg(theme::GRAY),
+                State::Done => Span::raw("✓ ").fg(theme::GREEN),
+                State::Failed(_) => Span::raw("✗ ").fg(theme::RED),
+                State::Skipped(_) => Span::raw("- ").fg(theme::GRAY),
             };
             lines.push(describe(item, &self.worktrees, marker));
             match state {
-                State::Failed(reason) => lines.push(detail(reason).red()),
+                State::Failed(reason) => lines.push(detail(reason).fg(theme::RED)),
                 State::Skipped(reason) => lines.push(detail(&format!("skipped: {reason}"))),
                 State::Pending | State::Done => {}
             }
@@ -203,7 +203,7 @@ impl Report {
         let footer = if self.is_running() {
             let total = count(|s| !matches!(s, State::Skipped(_)));
             Line::from(vec![
-                mode_tag("APPLYING", Color::Blue),
+                mode_tag("APPLYING", theme::BLUE),
                 Span::raw(format!("  {}/{total}", total - self.remaining)),
             ])
         } else {
@@ -212,7 +212,7 @@ impl Report {
             let done = count(|s| matches!(s, State::Done));
             let next = if self.quit_after { "quit" } else { "reload" };
             Line::from(vec![
-                mode_tag("DONE", if failed > 0 { Color::Red } else { Color::Green }),
+                mode_tag("DONE", if failed > 0 { theme::RED } else { theme::GREEN }),
                 Span::raw(format!(
                     "  {done} done, {failed} failed, {skipped} skipped. Press any key to {next}"
                 )),
@@ -226,7 +226,7 @@ fn describe<'a>(item: &'a Item, worktrees: &[Worktree], marker: Span<'a>) -> Lin
     let mut spans = vec![marker];
     match item {
         Ok(Step::Remove(remove)) => {
-            spans.push(verb("REMOVE", Color::Red));
+            spans.push(verb("REMOVE", theme::RED));
             spans.push(Span::raw(label(&remove.worktree)));
             spans.push(Span::raw("  "));
             spans.push(Span::raw(format::tier_icon(remove.tier)).fg(tier_color(remove.tier)));
@@ -241,46 +241,48 @@ fn describe<'a>(item: &'a Item, worktrees: &[Worktree], marker: Span<'a>) -> Lin
                 spans.push(Span::raw("  "));
                 spans.push(if remove.force {
                     Span::raw(format!("FORCE: discards {n} change(s)"))
-                        .red()
+                        .fg(theme::RED)
                         .bold()
                 } else {
-                    Span::raw(format!("{n} uncommitted change(s), f to force")).red()
+                    Span::raw(format!("{n} uncommitted change(s), f to force")).fg(theme::RED)
                 });
             }
             if let Some(workspace) = &remove.workspace {
                 spans.push(
-                    Span::raw(format!("  closes herdr workspace {}", workspace.id)).dark_gray(),
+                    Span::raw(format!("  closes herdr workspace {}", workspace.id)).fg(theme::GRAY),
                 );
                 if workspace.agents > 0 {
                     let n = workspace.agents;
                     spans.push(Span::raw("  "));
                     spans.push(if remove.force {
-                        Span::raw(format!("FORCE: stops {n} agent(s)")).red().bold()
+                        Span::raw(format!("FORCE: stops {n} agent(s)"))
+                            .fg(theme::RED)
+                            .bold()
                     } else {
-                        Span::raw(format!("{n} agent(s) running, f to force")).red()
+                        Span::raw(format!("{n} agent(s) running, f to force")).fg(theme::RED)
                     });
                 }
             }
         }
         Ok(Step::Move(step)) => {
-            spans.push(verb("MOVE", Color::Yellow));
+            spans.push(verb("MOVE", theme::YELLOW));
             spans.push(Span::raw(format!(
                 "{} → {}",
                 label(&step.worktree),
                 format::file_name(&step.to)
             )));
             if let Some(branch) = &step.rename_branch {
-                spans.push(Span::raw(format!("  renames branch to {branch}")).dark_gray());
+                spans.push(Span::raw(format!("  renames branch to {branch}")).fg(theme::GRAY));
             }
             if let Some(workspace) = &step.workspace {
                 spans.push(
                     Span::raw(format!("  closes and reopens herdr workspace {workspace}"))
-                        .dark_gray(),
+                        .fg(theme::GRAY),
                 );
             }
         }
         Ok(Step::Create(create)) => {
-            spans.push(verb("CREATE", Color::Green));
+            spans.push(verb("CREATE", theme::GREEN));
             spans.push(Span::raw(format!(
                 "{}/{}",
                 format::file_name(&create.repo),
@@ -295,7 +297,7 @@ fn describe<'a>(item: &'a Item, worktrees: &[Worktree], marker: Span<'a>) -> Lin
             } else {
                 ""
             };
-            spans.push(Span::raw(format!("  {}, {start}{herdr}", create.source)).dark_gray());
+            spans.push(Span::raw(format!("  {}, {start}{herdr}", create.source)).fg(theme::GRAY));
         }
         Err(blocked) => {
             let (name, subject) = match &blocked.operation {
@@ -306,9 +308,9 @@ fn describe<'a>(item: &'a Item, worktrees: &[Worktree], marker: Span<'a>) -> Lin
                 ),
                 Operation::Create { target, .. } => ("CREATE", target.clone()),
             };
-            spans.push(verb(name, Color::DarkGray));
-            spans.push(Span::raw(subject).dark_gray());
-            spans.push(Span::raw(format!("  ✗ {}", blocked.reason)).red());
+            spans.push(verb(name, theme::GRAY));
+            spans.push(Span::raw(subject).fg(theme::GRAY));
+            spans.push(Span::raw(format!("  ✗ {}", blocked.reason)).fg(theme::RED));
         }
     }
     Line::from(spans)
@@ -319,11 +321,11 @@ fn changes(remove: &apply::Remove) -> Vec<Line<'static>> {
         .changes
         .iter()
         .take(CHANGES_SHOWN)
-        .map(|change| detail(change).dark_gray())
+        .map(|change| detail(change).fg(theme::GRAY))
         .collect();
     if remove.changes.len() > CHANGES_SHOWN {
         let more = remove.changes.len() - CHANGES_SHOWN;
-        lines.push(detail(&format!("… {more} more")).dark_gray());
+        lines.push(detail(&format!("… {more} more")).fg(theme::GRAY));
     }
     lines
 }

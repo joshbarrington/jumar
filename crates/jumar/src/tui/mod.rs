@@ -1,5 +1,6 @@
 mod buffer;
 mod confirm;
+mod theme;
 
 use std::io;
 use std::path::{Path, PathBuf};
@@ -296,7 +297,7 @@ fn convert(event: KeyEvent) -> Option<Key> {
 
 fn mode_tag(tag: &str, color: Color) -> Span<'static> {
     Span::raw(format!(" {tag} "))
-        .fg(Color::Black)
+        .fg(theme::BG0)
         .bg(color)
         .bold()
 }
@@ -305,8 +306,8 @@ fn mode_tag(tag: &str, color: Color) -> Span<'static> {
 fn framed(frame: &mut Frame, title: &str, info: Line) -> Rect {
     let block = Block::bordered()
         .border_type(BorderType::Rounded)
-        .border_style(Style::new().dark_gray())
-        .title(Line::from(format!(" {title} ")).bold().blue())
+        .border_style(Style::new().fg(theme::GRAY))
+        .title(Line::from(format!(" {title} ")).bold().fg(theme::BLUE))
         .title_top(info.right_aligned())
         .padding(Padding::new(2, 2, 1, 0));
     let inner = block.inner(frame.area());
@@ -316,9 +317,9 @@ fn framed(frame: &mut Frame, title: &str, info: Line) -> Rect {
 
 fn tier_color(tier: Tier) -> Color {
     match tier {
-        Tier::Safe => Color::Green,
-        Tier::Unmerged => Color::Yellow,
-        Tier::Dirty => Color::Red,
+        Tier::Safe => theme::GREEN,
+        Tier::Unmerged => theme::YELLOW,
+        Tier::Dirty => theme::RED,
     }
 }
 

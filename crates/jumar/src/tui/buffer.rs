@@ -13,11 +13,11 @@ use jumar_core::plan::Line as BufferLine;
 use jumar_core::safety::Tier;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout};
-use ratatui::style::{Color, Modifier, Style, Stylize};
+use ratatui::style::{Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
-use super::{column_width, mode_tag, pad, to_u16, width};
+use super::{column_width, mode_tag, pad, theme, to_u16, width};
 use crate::discover::{self, Scan};
 use crate::format::{self, InspectResult};
 
@@ -148,27 +148,27 @@ impl Buffer {
                         source: format::source(worktree),
                         herdr: self.herdr_marker(worktree),
                         style: if renamed {
-                            Style::new().fg(Color::Yellow)
+                            Style::new().fg(theme::YELLOW)
                         } else {
                             Style::new()
                         },
                         state_style: match (worktree.health, result) {
                             (Health::Prunable | Health::Orphaned, _) | (_, Some(Err(_))) => {
-                                Style::new().fg(Color::Red)
+                                Style::new().fg(theme::RED)
                             }
-                            _ => Style::new().fg(Color::DarkGray),
+                            _ => Style::new().fg(theme::GRAY),
                         },
                     }
                 }
                 BufferLine::New(text) => Row {
                     repo: None,
-                    mark: Span::raw("+").green(),
+                    mark: Span::raw("+").fg(theme::GREEN),
                     name: text,
                     branch: String::new(),
                     state: String::new(),
                     source: "",
                     herdr: Span::raw(""),
-                    style: Style::new().fg(Color::Green),
+                    style: Style::new().fg(theme::GREEN),
                     state_style: Style::new(),
                 },
             })
@@ -182,9 +182,9 @@ impl Buffer {
             .and_then(|state| state.workspace_for(&worktree.path))
         {
             Some(workspace) if workspace.agents > 0 => {
-                Span::raw(format!("◆ {} agent(s)", workspace.agents)).yellow()
+                Span::raw(format!("◆ {} agent(s)", workspace.agents)).fg(theme::YELLOW)
             }
-            Some(_) => Span::raw("◇ open").dark_gray(),
+            Some(_) => Span::raw("◇ open").fg(theme::GRAY),
             None => Span::raw(""),
         }
     }
@@ -224,7 +224,7 @@ impl Buffer {
         });
 
         let selected: HashSet<usize> = self.selected().collect();
-        let titles = HEADERS.map(|h| (h.to_owned(), Style::new().dark_gray().bold()));
+        let titles = HEADERS.map(|h| (h.to_owned(), Style::new().fg(theme::GRAY).bold()));
         frame.render_widget(columns(&Span::raw(""), titles, widths), header);
         let lines: Vec<Line> = display
             .iter()
@@ -234,17 +234,17 @@ impl Buffer {
             .map(|(index, item)| match item {
                 Display::Gap => Line::default(),
                 Display::Group(repo) => Line::from(vec![
-                    Span::raw("\u{f401} ").blue(),
-                    Span::raw(format::file_name(repo)).blue().bold(),
+                    Span::raw("\u{f401} ").fg(theme::BLUE),
+                    Span::raw(format::file_name(repo)).fg(theme::BLUE).bold(),
                     Span::raw("  "),
-                    Span::raw(format::tilde(repo, &self.home)).dark_gray(),
+                    Span::raw(format::tilde(repo, &self.home)).fg(theme::GRAY),
                 ]),
                 Display::Row(pos) => {
                     let line = row_line(&rows[*pos], widths);
                     if selected.contains(pos) {
-                        line.bg(Color::Indexed(24))
+                        line.bg(theme::BG2)
                     } else if Some(index) == cursor_line {
-                        line.bg(Color::Indexed(236))
+                        line.bg(theme::BG1)
                     } else {
                         line
                     }
@@ -257,7 +257,7 @@ impl Buffer {
             } else {
                 "no worktrees match the filter"
             };
-            frame.render_widget(Paragraph::new(empty).dark_gray(), list);
+            frame.render_widget(Paragraph::new(empty).fg(theme::GRAY), list);
         } else {
             frame.render_widget(Paragraph::new(lines), list);
         }
@@ -287,11 +287,11 @@ impl Buffer {
     /// command and filter mode.
     fn status_line(&self) -> Line<'_> {
         let (tag, color) = match self.editor.mode() {
-            Mode::Normal => ("NORMAL", Color::Blue),
-            Mode::Visual => ("VISUAL", Color::Cyan),
-            Mode::Insert => ("INSERT", Color::Green),
-            Mode::Command => ("COMMAND", Color::Yellow),
-            Mode::Filter => ("FILTER", Color::Magenta),
+            Mode::Normal => ("NORMAL", theme::BLUE),
+            Mode::Visual => ("VISUAL", theme::ORANGE),
+            Mode::Insert => ("INSERT", theme::GREEN),
+            Mode::Command => ("COMMAND", theme::YELLOW),
+            Mode::Filter => ("FILTER", theme::AQUA),
         };
         let mut spans = vec![mode_tag(tag, color), Span::raw(" ")];
         match self.editor.mode() {
@@ -300,16 +300,17 @@ impl Buffer {
             Mode::Visual => {
                 let selected = self.selected().count();
                 spans.push(
-                    Span::raw(format!("{selected} selected  d delete  o other end")).dark_gray(),
+                    Span::raw(format!("{selected} selected  d delete  o other end"))
+                        .fg(theme::GRAY),
                 );
             }
             Mode::Normal | Mode::Insert => {
                 if self.editor.is_leader_pending() {
-                    spans.push(Span::raw(self.tool_hint.clone()).dark_gray());
+                    spans.push(Span::raw(self.tool_hint.clone()).fg(theme::GRAY));
                 } else if let Some(message) = self.editor.message() {
                     spans.push(Span::raw(message));
                 } else if !self.editor.filter().is_empty() {
-                    spans.push(Span::raw(format!("/{}", self.editor.filter())).dark_gray());
+                    spans.push(Span::raw(format!("/{}", self.editor.filter())).fg(theme::GRAY));
                 }
             }
         }
@@ -337,7 +338,7 @@ impl Buffer {
         if self.editor.is_modified() {
             parts.push("[+]".into());
         }
-        Line::from(format!(" {} ", parts.join("  "))).dark_gray()
+        Line::from(format!(" {} ", parts.join("  "))).fg(theme::GRAY)
     }
 }
 
@@ -363,9 +364,9 @@ fn group<'a>(rows: &[Row<'a>]) -> Vec<Display<'a>> {
 fn row_line(row: &Row, widths: [usize; 4]) -> Line<'static> {
     let cells = [
         (row.name.to_owned(), row.style.add_modifier(Modifier::BOLD)),
-        (row.branch.clone(), Style::new().fg(Color::Magenta)),
+        (row.branch.clone(), Style::new().fg(theme::PURPLE)),
         (row.state.clone(), row.state_style),
-        (row.source.to_owned(), Style::new().fg(Color::DarkGray)),
+        (row.source.to_owned(), Style::new().fg(theme::GRAY)),
         (row.herdr.content.to_string(), row.herdr.style),
     ];
     columns(&row.mark, cells, widths)
@@ -391,8 +392,8 @@ fn columns(mark: &Span<'static>, cells: [(String, Style); 5], widths: [usize; 4]
 
 fn mark(result: Option<&InspectResult>) -> Span<'static> {
     let color = match result {
-        None => Color::DarkGray,
-        Some(Err(_)) => Color::Red,
+        None => theme::GRAY,
+        Some(Err(_)) => theme::RED,
         Some(Ok(inspection)) => super::tier_color(inspection.tier),
     };
     Span::raw(format::tier_mark(result)).fg(color)
