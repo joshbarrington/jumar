@@ -189,8 +189,9 @@ impl Buffer {
         }
     }
 
-    pub fn render(&mut self, frame: &mut Frame) {
-        let area = super::framed(frame, "jumar", self.summary());
+    /// `focused` is false while a pop-up sits on top, which then owns the cursor.
+    pub fn render(&mut self, frame: &mut Frame, focused: bool) {
+        let area = super::framed(frame, frame.area(), "jumar", self.summary());
         let [header, list, _, status] = Layout::vertical([
             Constraint::Length(1),
             Constraint::Fill(1),
@@ -267,6 +268,7 @@ impl Buffer {
         frame.render_widget(Paragraph::new(status_line), status);
 
         match self.editor.mode() {
+            _ if !focused => {}
             Mode::Command | Mode::Filter => {
                 frame.set_cursor_position((status.x + to_u16(prompt_end), status.y));
             }

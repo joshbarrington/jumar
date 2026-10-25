@@ -8,12 +8,11 @@ use jumar_core::model::Worktree;
 use jumar_core::plan::Operation;
 use jumar_core::safety::Tier;
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Layout};
 use ratatui::style::{Color, Style, Stylize};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
-use super::{framed, mode_tag, theme, tier_color, to_u16};
+use super::{mode_tag, popup, theme, tier_color, to_u16};
 use crate::format;
 
 type Item = Result<Step, Blocked>;
@@ -103,13 +102,6 @@ impl Confirm {
     }
 
     pub fn render(&self, frame: &mut Frame) {
-        let area = framed(frame, "confirm", Line::default());
-        let [list, _, status] = Layout::vertical([
-            Constraint::Fill(1),
-            Constraint::Length(1),
-            Constraint::Length(1),
-        ])
-        .areas(area);
         let mut lines = Vec::new();
         let mut selected_line = 0;
         for (index, item) in self.items.iter().enumerate() {
@@ -128,14 +120,14 @@ impl Confirm {
                 lines.extend(changes(remove));
             }
         }
-        let height = usize::from(list.height);
-        let offset = (selected_line + 1).saturating_sub(height);
-        frame.render_widget(Paragraph::new(lines).scroll((to_u16(offset), 0)), list);
-
         let footer = Line::from(vec![
             mode_tag("CONFIRM", theme::YELLOW),
             Span::raw("  y apply  n back  f force  D toggle branch deletion"),
         ]);
+        let (list, status) = popup(frame, "confirm", &lines, &footer);
+        let height = usize::from(list.height);
+        let offset = (selected_line + 1).saturating_sub(height);
+        frame.render_widget(Paragraph::new(lines).scroll((to_u16(offset), 0)), list);
         frame.render_widget(footer, status);
     }
 }
@@ -173,13 +165,6 @@ impl Report {
     }
 
     pub fn render(&self, frame: &mut Frame) {
-        let area = framed(frame, "apply", Line::default());
-        let [list, _, status] = Layout::vertical([
-            Constraint::Fill(1),
-            Constraint::Length(1),
-            Constraint::Length(1),
-        ])
-        .areas(area);
         let mut lines = Vec::new();
         for (item, state) in self.items.iter().zip(&self.states) {
             let marker = match state {
@@ -195,9 +180,6 @@ impl Report {
                 State::Pending | State::Done => {}
             }
         }
-        let height = usize::from(list.height);
-        let offset = lines.len().saturating_sub(height);
-        frame.render_widget(Paragraph::new(lines).scroll((to_u16(offset), 0)), list);
 
         let count = |f: fn(&State) -> bool| self.states.iter().filter(|s| f(s)).count();
         let footer = if self.is_running() {
@@ -218,6 +200,10 @@ impl Report {
                 )),
             ])
         };
+        let (list, status) = popup(frame, "apply", &lines, &footer);
+        let height = usize::from(list.height);
+        let offset = lines.len().saturating_sub(height);
+        frame.render_widget(Paragraph::new(lines).scroll((to_u16(offset), 0)), list);
         frame.render_widget(footer, status);
     }
 }

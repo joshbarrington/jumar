@@ -22,10 +22,10 @@ use ratatui::crossterm::execute;
 use ratatui::crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
-use ratatui::layout::Rect;
-use ratatui::style::{Color, Style, Stylize};
+use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Padding};
+use ratatui::widgets::{Block, BorderType, Clear, Padding};
 use ratatui::{DefaultTerminal, Frame};
 
 use crate::discover::{self, Env};
@@ -90,10 +90,13 @@ impl App {
                 execute!(io::stdout(), shape)?;
             }
             let (buffer, screen) = (&mut self.buffer, &self.screen);
-            terminal.draw(|frame| match screen {
-                Screen::Edit => buffer.render(frame),
-                Screen::Confirm(confirm) => confirm.render(frame),
-                Screen::Report(report) => report.render(frame),
+            terminal.draw(|frame| {
+                buffer.render(frame, matches!(screen, Screen::Edit));
+                match screen {
+                    Screen::Edit => {}
+                    Screen::Confirm(confirm) => confirm.render(frame),
+                    Screen::Report(report) => report.render(frame),
+                }
             })?;
 
             let busy = self.buffer.is_loading()
@@ -303,16 +306,46 @@ fn mode_tag(tag: &str, color: Color) -> Span<'static> {
 }
 
 /// Draws the rounded frame every screen sits in and returns the padded area inside it.
-fn framed(frame: &mut Frame, title: &str, info: Line) -> Rect {
+fn framed(frame: &mut Frame, area: Rect, title: &str, info: Line) -> Rect {
     let block = Block::bordered()
         .border_type(BorderType::Rounded)
         .border_style(Style::new().fg(theme::GRAY))
         .title(Line::from(format!(" {title} ")).bold().fg(theme::BLUE))
         .title_top(info.right_aligned())
         .padding(Padding::new(2, 2, 1, 0));
-    let inner = block.inner(frame.area());
-    frame.render_widget(block, frame.area());
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
     inner
+}
+
+/// Dims whatever is already drawn and frames a centred window sized to `lines` and
+/// `footer`. Returns the list and footer areas inside it.
+fn popup(frame: &mut Frame, title: &str, lines: &[Line], footer: &Line) -> (Rect, Rect) {
+    const BORDER_AND_PADDING: (usize, usize) = (6, 2);
+    let screen = frame.area();
+    frame
+        .buffer_mut()
+        .set_style(screen, Style::new().add_modifier(Modifier::DIM));
+    let content = lines
+        .iter()
+        .map(Line::width)
+        .chain([footer.width()])
+        .max()
+        .unwrap_or(0);
+    // The footer sits below the list after a blank line.
+    let width = to_u16(content + BORDER_AND_PADDING.0).min(screen.width.saturating_sub(4));
+    let height =
+        to_u16(lines.len() + 2 + BORDER_AND_PADDING.1 + 1).min(screen.height.saturating_sub(2));
+    let area = screen.centered(Constraint::Length(width), Constraint::Length(height));
+    frame.render_widget(Clear, area);
+    let inner = framed(frame, area, title, Line::default());
+    let [list, _, status] = Layout::vertical([
+        Constraint::Fill(1),
+        Constraint::Length(1),
+        Constraint::Length(1),
+    ])
+    .areas(inner);
+    (list, status)
 }
 
 fn tier_color(tier: Tier) -> Color {
