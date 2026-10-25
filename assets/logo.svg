@@ -3,11 +3,11 @@
 <clipPath id="jm-tile"><rect x="-86" y="-40" width="400" height="400" rx="10"/></clipPath>
 <pattern id="jm-braid-c" width="12" height="12" patternUnits="userSpaceOnUse" x="52" y="0">
 <rect width="12" height="12" fill="#111111"/>
-<path d="M0 12 L12 0" stroke="#E2552B" stroke-width="1.6"/>
+<path d="M0 12 L12 0" stroke="#B4B7BB" stroke-width="1.6"/>
 </pattern>
 </defs>
 <g clip-path="url(#jm-tile)">
-<rect x="-86" y="-40" width="400" height="400" fill="#E2552B"/>
+<rect x="-86" y="-40" width="400" height="400" fill="#B4B7BB"/>
 <g fill="none" stroke="#111111" stroke-width="7" stroke-linejoin="round" stroke-linecap="round">
 <path d="M56 18 L118 18 Q128 18 134 26 L150 44 Q158 54 160 66 L176 112 Q192 130 186 160 C182 200 176 236 160 262 C146 284 128 300 104 304 L60 308 Q40 308 40 290 L40 34 Q40 18 56 18 Z"/>
 <path d="M80 116 C96 112 112 112 126 120 C140 128 142 146 138 168 C132 206 122 240 104 268 C96 278 84 278 80 266 Z"/>
@@ -18,7 +18,7 @@
 <rect x="112" y="68" width="22" height="8" rx="4" transform="rotate(-30 123 72)" fill="#111111"/>
 <circle cx="136" cy="46" r="6" fill="#111111"/>
 <path fill="#111111" stroke="#111111" stroke-width="2" stroke-linejoin="round" d="M68 60 L84 58 Q96 70 94 98 L68 106 L64 102 L68 98 L64 94 L68 90 L64 86 L68 82 L64 78 L68 74 L64 70 L68 66 L64 62 Z"/>
-<circle cx="82" cy="80" r="3" fill="#E2552B"/>
+<circle cx="82" cy="80" r="3" fill="#B4B7BB"/>
 <path fill="#111111" stroke="#111111" stroke-width="3" stroke-linejoin="round" d="M140 150 L186 160 C182 200 176 236 160 262 C146 284 128 300 104 304 L104 268 C122 240 132 206 138 168 L140 150 Z"/>
 </g>
 </svg>
