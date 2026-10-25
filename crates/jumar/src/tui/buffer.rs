@@ -205,6 +205,7 @@ impl Buffer {
             Constraint::Length(1),
         ])
         .areas(area);
+        let status = super::footer_area(status);
         let rows = self.rows();
         let widths = [
             column_width(rows.iter().map(|r| r.name).chain([HEADERS[0]])),

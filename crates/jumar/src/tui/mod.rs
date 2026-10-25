@@ -389,7 +389,16 @@ fn popup(frame: &mut Frame, title: &str, lines: &[Line], footer: &Line) -> (Rect
         Constraint::Length(1),
     ])
     .areas(inner);
-    (list, status)
+    (list, footer_area(status))
+}
+
+/// Footers sit half the side padding from the border, so they read as part of the frame.
+fn footer_area(status: Rect) -> Rect {
+    Rect {
+        x: status.x - 1,
+        width: status.width + 2,
+        ..status
+    }
 }
 
 fn tier_color(tier: Tier) -> Color {
