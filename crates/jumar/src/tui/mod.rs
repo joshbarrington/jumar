@@ -320,7 +320,7 @@ fn framed(frame: &mut Frame, area: Rect, title: &str, info: Line) -> Rect {
     let block = Block::bordered()
         .border_type(BorderType::Rounded)
         .border_style(Style::new().fg(theme::GRAY))
-        .title(Line::from(format!(" {title} ")).bold().fg(theme::BLUE))
+        .title(Line::from(format!(" {title} ")).bold().fg(theme::YELLOW))
         .title_top(info.right_aligned())
         .padding(Padding::new(2, 2, 1, 0));
     let inner = block.inner(area);

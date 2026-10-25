@@ -237,8 +237,8 @@ impl Buffer {
             .map(|(index, item)| match item {
                 Display::Gap => Line::default(),
                 Display::Group(repo) => Line::from(vec![
-                    Span::raw("\u{f418} ").fg(theme::BLUE),
-                    Span::raw(format::file_name(repo)).fg(theme::BLUE).bold(),
+                    Span::raw("\u{f418} ").fg(theme::YELLOW),
+                    Span::raw(format::file_name(repo)).fg(theme::YELLOW).bold(),
                     Span::raw("  "),
                     Span::raw(format::tilde(repo, &self.home)).fg(theme::GRAY),
                 ]),
@@ -291,7 +291,7 @@ impl Buffer {
     /// command and filter mode.
     fn status_line(&self) -> Line<'_> {
         let (tag, color) = match self.editor.mode() {
-            Mode::Normal => ("NORMAL", theme::BLUE),
+            Mode::Normal => ("NORMAL", theme::YELLOW),
             Mode::Visual => ("VISUAL", theme::ORANGE),
             Mode::Insert => ("INSERT", theme::GREEN),
             Mode::Command => ("COMMAND", theme::YELLOW),
