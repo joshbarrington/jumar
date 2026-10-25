@@ -42,6 +42,7 @@ jumar init fish | source
 | `Enter` | go to the worktree (its herdr workspace inside herdr) |
 | `<Space>d` | open revdiff on the worktree's changes |
 | `<Space>r` | open reviewr in the worktree's herdr workspace |
+| `?` `:help` | show these keys |
 
 `:w` shows every change before anything runs. Removes are graded:
 

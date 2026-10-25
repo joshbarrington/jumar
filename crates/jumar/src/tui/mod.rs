@@ -1,5 +1,6 @@
 mod buffer;
 mod confirm;
+mod help;
 mod theme;
 
 use std::io;
@@ -63,6 +64,7 @@ enum Screen {
     Edit,
     Confirm(Confirm),
     Report(Report),
+    Help,
 }
 
 struct App {
@@ -89,6 +91,7 @@ impl App {
                 };
                 execute!(io::stdout(), shape)?;
             }
+            let tools = self.env.config.tools();
             let (buffer, screen) = (&mut self.buffer, &self.screen);
             terminal.draw(|frame| {
                 buffer.render(frame, matches!(screen, Screen::Edit));
@@ -96,6 +99,7 @@ impl App {
                     Screen::Edit => {}
                     Screen::Confirm(confirm) => confirm.render(frame),
                     Screen::Report(report) => report.render(frame),
+                    Screen::Help => help::render(frame, &tools),
                 }
             })?;
 
@@ -153,6 +157,11 @@ impl App {
                 self.screen = Screen::Edit;
             }
             Screen::Report(_) => {}
+            Screen::Help => {
+                if matches!(key, Key::Char('?' | 'q') | Key::Esc | Key::Ctrl('c')) {
+                    self.screen = Screen::Edit;
+                }
+            }
         }
         Ok(None)
     }
@@ -161,6 +170,7 @@ impl App {
         let editor = &mut self.buffer.editor;
         match action {
             Action::Quit => return Some(Effect::Exit(Outcome::Quit)),
+            Action::Help => self.screen = Screen::Help,
             Action::Open(_) if editor.is_modified() => {
                 editor.set_message("unsaved changes (:w to apply, :q! to discard)");
             }

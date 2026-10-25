@@ -38,6 +38,7 @@ pub enum Action {
         key: char,
         id: EntryId,
     },
+    Help,
     /// An ex command the editor does not handle itself, such as `prune`.
     Command(String),
 }
@@ -279,6 +280,7 @@ impl Editor {
                     self.redo();
                 }
             }
+            Key::Char('?') => return Some(Action::Help),
             Key::Char(':') => {
                 self.prompt.clear();
                 self.mode = Mode::Command;
@@ -352,6 +354,7 @@ impl Editor {
                         None
                     }
                     "q" | "q!" => Some(Action::Quit),
+                    "h" | "help" => Some(Action::Help),
                     other => Some(Action::Command(other.to_owned())),
                 };
             }
@@ -862,6 +865,11 @@ mod tests {
             ed.lines()[0],
             Line::Existing { id: EntryId(1), .. }
         ));
+    }
+
+    #[test]
+    fn question_mark_should_ask_for_help() {
+        assert_eq!(feed(&mut editor(&ABC), "?"), Some(Action::Help));
     }
 
     #[test]
