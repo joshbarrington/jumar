@@ -267,6 +267,7 @@ impl Buffer {
         let status_line = self.status_line();
         let prompt_end = status_line.width();
         frame.render_widget(Paragraph::new(status_line), status);
+        frame.render_widget(Line::from(hints([("?", "help")])).right_aligned(), status);
 
         match self.editor.mode() {
             _ if !focused => {}
