@@ -165,7 +165,8 @@ impl Confirm {
 
 enum State {
     Pending,
-    Done,
+    /// With notes on what went less well than planned.
+    Done(Vec<String>),
     Failed(String),
     Skipped(String),
 }
@@ -175,7 +176,7 @@ pub struct Report {
     worktrees: Arc<[Worktree]>,
     items: Vec<Item>,
     states: Vec<State>,
-    results: Receiver<(usize, jumar_core::Result<()>)>,
+    results: Receiver<(usize, jumar_core::Result<Vec<String>>)>,
     remaining: usize,
     pub quit_after: bool,
 }
@@ -188,7 +189,7 @@ impl Report {
     pub fn receive(&mut self) {
         for (index, result) in self.results.try_iter() {
             self.states[index] = match result {
-                Ok(()) => State::Done,
+                Ok(notes) => State::Done(notes),
                 Err(err) => State::Failed(err.to_string()),
             };
             self.remaining -= 1;
@@ -200,7 +201,7 @@ impl Report {
         for (item, state) in self.items.iter().zip(&self.states) {
             let marker = match state {
                 State::Pending => Span::raw("· ").fg(theme::GRAY),
-                State::Done => Span::raw("✓ ").fg(theme::GREEN),
+                State::Done(_) => Span::raw("✓ ").fg(theme::GREEN),
                 State::Failed(_) => Span::raw("✗ ").fg(theme::RED),
                 State::Skipped(_) => Span::raw("- ").fg(theme::GRAY),
             };
@@ -208,7 +209,10 @@ impl Report {
             match state {
                 State::Failed(reason) => lines.push(detail(reason).fg(theme::RED)),
                 State::Skipped(reason) => lines.push(detail(&format!("skipped: {reason}"))),
-                State::Pending | State::Done => {}
+                State::Done(notes) => {
+                    lines.extend(notes.iter().map(|n| detail(n).fg(theme::YELLOW)));
+                }
+                State::Pending => {}
             }
         }
 
@@ -222,7 +226,7 @@ impl Report {
         } else {
             let failed = count(|s| matches!(s, State::Failed(_)));
             let skipped = count(|s| matches!(s, State::Skipped(_)));
-            let done = count(|s| matches!(s, State::Done));
+            let done = count(|s| matches!(s, State::Done(_)));
             let next = if self.quit_after { "quit" } else { "reload" };
             let mut footer = vec![
                 mode_tag("DONE", if failed > 0 { theme::RED } else { theme::GREEN }),
@@ -394,6 +398,9 @@ fn details(item: &Item, home: &Path) -> Vec<Line<'static>> {
                 "branch",
                 match &create.start {
                     Start::Existing => format!("checks out existing {}", create.branch),
+                    Start::From(base) if create.fetch.is_some() => {
+                        format!("new {} from {base}, fetched first", create.branch)
+                    }
                     Start::From(base) => format!("new {} from {base}", create.branch),
                 },
             ));

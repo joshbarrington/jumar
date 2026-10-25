@@ -1,5 +1,7 @@
 //! ```toml
 //! default_create_source = "work"
+//! # Fetch the remote branch a new worktree starts from, such as origin/main, first.
+//! fetch_on_create = true
 //! # Re-read statuses and herdr agents this often while open; 0 turns it off.
 //! refresh_seconds = 5
 //!
@@ -124,6 +126,7 @@ struct File {
     #[serde(default, rename = "repo")]
     repos: Vec<Repo>,
     refresh_seconds: Option<u64>,
+    fetch_on_create: Option<bool>,
     #[serde(default, rename = "source")]
     sources: Vec<Source>,
     #[serde(default, rename = "tool")]
@@ -136,6 +139,7 @@ struct File {
 pub struct Config {
     repos: Vec<Repo>,
     refresh_seconds: u64,
+    fetch_on_create: bool,
     sources: Vec<Source>,
     tools: Vec<Tool>,
     default_create_source: Option<String>,
@@ -146,6 +150,7 @@ impl Default for Config {
         Self {
             repos: Vec::new(),
             refresh_seconds: DEFAULT_REFRESH_SECONDS,
+            fetch_on_create: true,
             sources: presets(),
             tools: preset_tools(),
             default_create_source: None,
@@ -170,6 +175,7 @@ impl Config {
         Ok(Self {
             repos: file.repos,
             refresh_seconds: file.refresh_seconds.unwrap_or(DEFAULT_REFRESH_SECONDS),
+            fetch_on_create: file.fetch_on_create.unwrap_or(true),
             sources: merge_sources(&file.sources),
             tools,
             default_create_source: file.default_create_source,
@@ -207,6 +213,11 @@ impl Config {
     #[must_use]
     pub fn default_create_source(&self) -> Option<&str> {
         self.default_create_source.as_deref()
+    }
+
+    #[must_use]
+    pub fn fetch_on_create(&self) -> bool {
+        self.fetch_on_create
     }
 
     /// `None` when auto-refresh is off.

@@ -423,6 +423,116 @@ fn execute_create_should_keep_tracked_files_over_copies() {
     assert_eq!(fs::read_to_string(path.join("README")).unwrap(), "tracked");
 }
 
+impl Fixture {
+    /// Gives the repo an `origin` with `main`, then pushes a commit to it from another
+    /// clone, so the repo's `origin/main` is one commit behind. Returns that commit.
+    fn add_remote_ahead(&self) -> String {
+        let remote = self.home.join("remote.git");
+        git(
+            &self.home,
+            &["init", "-q", "--bare", remote.to_str().unwrap()],
+        );
+        git(
+            &self.repo(),
+            &["remote", "add", "origin", remote.to_str().unwrap()],
+        );
+        git(&self.repo(), &["push", "-q", "origin", "main"]);
+        git(&self.repo(), &["fetch", "-q", "origin"]);
+        git(&self.repo(), &["remote", "set-head", "origin", "main"]);
+        let other = self.home.join("other");
+        git(
+            &self.home,
+            &[
+                "clone",
+                "-q",
+                remote.to_str().unwrap(),
+                other.to_str().unwrap(),
+            ],
+        );
+        git(&other, &["commit", "-q", "--allow-empty", "-m", "upstream"]);
+        git(&other, &["push", "-q", "origin", "main"]);
+        git::run(&other, &["rev-parse", "HEAD"])
+            .unwrap()
+            .trim()
+            .to_owned()
+    }
+}
+
+fn head(path: &Path) -> String {
+    git::run(path, &["rev-parse", "HEAD"])
+        .unwrap()
+        .trim()
+        .to_owned()
+}
+
+#[test]
+fn prepare_create_should_fetch_the_remote_default_branch() {
+    let fx = Fixture::new();
+    fx.add_remote_ahead();
+
+    let create = fx.create("fix", None).unwrap();
+
+    let fetch = create.fetch.unwrap();
+    assert_eq!(
+        (fetch.remote.as_str(), fetch.branch.as_str()),
+        ("origin", "main")
+    );
+}
+
+#[test]
+fn prepare_create_should_not_fetch_a_local_base() {
+    let fx = Fixture::new();
+    fx.add_remote_ahead();
+
+    let create = fx.create("fix", Some("main")).unwrap();
+
+    assert_eq!(create.fetch, None);
+}
+
+#[test]
+fn prepare_create_should_not_fetch_when_turned_off() {
+    let mut fx = Fixture::new();
+    fx.add_remote_ahead();
+    fx.config = Config::from_toml("fetch_on_create = false\n", Path::new("config.toml")).unwrap();
+
+    let create = fx.create("fix", None).unwrap();
+
+    assert_eq!(create.fetch, None);
+}
+
+#[test]
+fn execute_create_should_start_from_the_freshly_fetched_commit() {
+    let fx = Fixture::new();
+    let upstream = fx.add_remote_ahead();
+    let create = fx.create("fix", None).unwrap();
+    let path = create.path.clone();
+
+    let notes = apply::execute(&Step::Create(create), &Herdr::new()).unwrap();
+
+    assert_eq!((head(&path), notes.len()), (upstream, 0));
+}
+
+#[test]
+fn execute_create_should_note_a_failed_fetch_and_still_create() {
+    let fx = Fixture::new();
+    fx.add_remote_ahead();
+    let stale = head(&fx.repo());
+    git(
+        &fx.repo(),
+        &["remote", "set-url", "origin", "/nonexistent/remote.git"],
+    );
+    let create = fx.create("fix", None).unwrap();
+    let path = create.path.clone();
+
+    let notes = apply::execute(&Step::Create(create), &Herdr::new()).unwrap();
+
+    assert_eq!(head(&path), stale);
+    assert!(
+        notes[0].contains("could not fetch origin/main"),
+        "{notes:?}"
+    );
+}
+
 /// A herdr stand-in that logs its arguments and succeeds without touching anything.
 fn fake_herdr(fx: &Fixture) -> (Herdr, PathBuf) {
     let log = fx.home.join("herdr.log");

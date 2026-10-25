@@ -130,7 +130,10 @@ open in a herdr workspace go through herdr; one with a running agent needs force
 and cannot be renamed.
 
 `o` takes `name`, `repo/name` or `name@base`. A new name makes a new branch from the repo's
-default branch, or from `base`; the name of an existing branch checks that branch out.
+default branch, or from `base`; the name of an existing branch checks that branch out. When
+the start is a remote branch, such as `origin/main`, jumar fetches it first, so the new
+worktree starts from the latest commit. If the fetch fails, for example offline, the
+worktree starts from the last fetched commit and the report says so.
 
 Each repo's own checkout is listed first as `(main)`: you can go to it or run tools on it,
 but not remove or rename it. The repo you run jumar from, and every `[[repo]]` in the
@@ -155,6 +158,7 @@ preset's globs.
 
 ```toml
 default_create_source = "work"
+fetch_on_create = true   # fetch origin/main (or the base) before creating from it
 refresh_seconds = 5   # re-read statuses and herdr agents; 0 turns it off
 
 [[repo]]

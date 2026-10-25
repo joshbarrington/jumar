@@ -82,6 +82,14 @@ pub struct Create {
     pub copy: Vec<PathBuf>,
     /// Shell commands run in the new worktree once it exists.
     pub on_create: Vec<String>,
+    /// The remote branch a new branch starts from, fetched first.
+    pub fetch: Option<RemoteBranch>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RemoteBranch {
+    pub remote: String,
+    pub branch: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -231,6 +239,10 @@ fn create(
             None => default_base(context, &repo).map_err(git_err)?,
         })
     };
+    let fetch = match &start {
+        Start::From(base) if context.config.fetch_on_create() => remote_branch(&repo, base),
+        _ => None,
+    };
     let setup = context.config.repo(&repo, context.home);
     let copy = match setup {
         Some(setup) => matching_files(&repo, &setup.copy)?,
@@ -244,8 +256,26 @@ fn create(
         open_in_herdr: source.opens_in_herdr() && context.herdr.is_some(),
         copy,
         on_create: setup.map(|s| s.on_create.clone()).unwrap_or_default(),
+        fetch,
         repo,
     })
+}
+
+/// `base` as a branch of one of the repo's remotes, like `origin/main`.
+fn remote_branch(repo: &Path, base: &str) -> Option<RemoteBranch> {
+    let base = base.strip_prefix("refs/remotes/").unwrap_or(base);
+    let remotes = git::run(repo, &["remote"]).ok()?;
+    remotes
+        .lines()
+        .filter_map(|remote| {
+            let branch = base.strip_prefix(remote)?.strip_prefix('/')?;
+            Some(RemoteBranch {
+                remote: remote.to_owned(),
+                branch: branch.to_owned(),
+            })
+        })
+        // A remote named `a/b` beats `a` for `a/b/c`.
+        .max_by_key(|found| found.remote.len())
 }
 
 /// Files in `repo` matching `patterns`, relative to it. Git's own directory and paths
@@ -329,11 +359,14 @@ pub fn expand_template(template: &str, repo: &Path, name: &str, home: &Path) -> 
     }
 }
 
+/// Returns notes on anything that went less well than planned but did not stop the step.
+///
 /// # Errors
 ///
 /// Fails when a git or herdr command fails; earlier commands of the step are not rolled
 /// back.
-pub fn execute(step: &Step, herdr: &Herdr) -> Result<()> {
+pub fn execute(step: &Step, herdr: &Herdr) -> Result<Vec<String>> {
+    let mut notes = Vec::new();
     match step {
         Step::Remove(remove) => {
             let worktree = &remove.worktree;
@@ -384,6 +417,14 @@ pub fn execute(step: &Step, herdr: &Herdr) -> Result<()> {
             }
         }
         Step::Create(create) => {
+            if let Some(fetch) = &create.fetch
+                && let Err(err) = git::fetch(&create.repo, &fetch.remote, &fetch.branch)
+            {
+                notes.push(format!(
+                    "could not fetch {}/{}, so it starts from the last fetched commit: {err}",
+                    fetch.remote, fetch.branch
+                ));
+            }
             let path = utf8(&create.path)?;
             match &create.start {
                 Start::Existing => {
@@ -411,7 +452,7 @@ pub fn execute(step: &Step, herdr: &Herdr) -> Result<()> {
             setup?;
         }
     }
-    Ok(())
+    Ok(notes)
 }
 
 fn set_up(create: &Create) -> Result<()> {
@@ -468,7 +509,10 @@ fn last_lines(output: &Output) -> String {
 /// Runs `steps` one at a time on a background thread, in order, sending each result
 /// tagged with its index. Later steps still run after a failure.
 #[must_use]
-pub fn execute_all(steps: Vec<(usize, Step)>, herdr: Herdr) -> Receiver<(usize, Result<()>)> {
+pub fn execute_all(
+    steps: Vec<(usize, Step)>,
+    herdr: Herdr,
+) -> Receiver<(usize, Result<Vec<String>>)> {
     let (tx, rx) = mpsc::channel();
     thread::spawn(move || {
         for (index, step) in steps {

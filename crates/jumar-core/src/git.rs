@@ -37,6 +37,30 @@ fn failure(dir: &Path, args: &[&str], output: &Output) -> Error {
     }
 }
 
+/// Updates `remote`'s `branch` in the repo's remote-tracking refs. Never prompts for
+/// credentials, since the terminal belongs to the TUI.
+///
+/// # Errors
+///
+/// Fails when git cannot start or the fetch fails.
+pub fn fetch(repo: &Path, remote: &str, branch: &str) -> Result<()> {
+    let refspec = format!("+refs/heads/{branch}:refs/remotes/{remote}/{branch}");
+    let args = ["fetch", "--quiet", "--no-tags", remote, &refspec];
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args(args)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .stdin(std::process::Stdio::null())
+        .output()
+        .map_err(Error::GitSpawn)?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(failure(repo, &args, &output))
+    }
+}
+
 /// For commands that answer yes/no with exit status 0/1.
 fn yes_no(dir: &Path, args: &[&str]) -> Result<bool> {
     let output = spawn(dir, args)?;
