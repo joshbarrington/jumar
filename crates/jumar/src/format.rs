@@ -7,20 +7,20 @@ use jumar_core::safety::Tier;
 
 pub type InspectResult = jumar_core::Result<Inspection>;
 
-/// Always two columns wide. `None` means the inspection is still running.
+/// One Nerd Font glyph. `None` means the inspection is still running.
 pub fn tier_mark(result: Option<&InspectResult>) -> &'static str {
     match result {
-        None => "· ",
-        Some(Err(_)) => "⚠️",
-        Some(Ok(inspection)) => tier_emoji(inspection.tier),
+        None => "·",
+        Some(Err(_)) => "\u{f071}",
+        Some(Ok(inspection)) => tier_icon(inspection.tier),
     }
 }
 
-pub fn tier_emoji(tier: Tier) -> &'static str {
+pub fn tier_icon(tier: Tier) -> &'static str {
     match tier {
-        Tier::Safe => "🟢",
-        Tier::Unmerged => "🟡",
-        Tier::Dirty => "🔴",
+        Tier::Safe => "\u{f058}",
+        Tier::Unmerged => "\u{f0aa}",
+        Tier::Dirty => "\u{f06a}",
     }
 }
 
@@ -29,6 +29,14 @@ pub fn file_name(path: &Path) -> String {
         || path.display().to_string(),
         |n| n.to_string_lossy().into_owned(),
     )
+}
+
+/// Shortens a path under `home` to start with `~`.
+pub fn tilde(path: &Path, home: &Path) -> String {
+    match path.strip_prefix(home) {
+        Ok(rest) => Path::new("~").join(rest).display().to_string(),
+        Err(_) => path.display().to_string(),
+    }
 }
 
 pub fn source(worktree: &Worktree) -> &str {
@@ -102,6 +110,14 @@ mod tests {
         };
 
         assert_eq!(status(&value), "3 changed, 1 untracked, ↑2, ↓1");
+    }
+
+    #[test]
+    fn tilde_should_shorten_paths_under_home() {
+        assert_eq!(
+            tilde(Path::new("/h/github/x"), Path::new("/h")),
+            "~/github/x"
+        );
     }
 
     #[test]

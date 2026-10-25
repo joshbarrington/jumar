@@ -13,16 +13,19 @@ use jumar_core::editor::{Action, Key, Mode};
 use jumar_core::herdr::Herdr;
 use jumar_core::model::Health;
 use jumar_core::plan::{self, EntryId};
+use jumar_core::safety::Tier;
 use jumar_core::tool;
-use ratatui::DefaultTerminal;
 use ratatui::crossterm::cursor::SetCursorStyle;
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::crossterm::execute;
 use ratatui::crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
-use ratatui::style::{Color, Stylize};
-use ratatui::text::Span;
+use ratatui::layout::Rect;
+use ratatui::style::{Color, Style, Stylize};
+use ratatui::text::{Line, Span};
+use ratatui::widgets::{Block, BorderType, Padding};
+use ratatui::{DefaultTerminal, Frame};
 
 use crate::discover::{self, Env};
 use crate::tools;
@@ -296,6 +299,27 @@ fn mode_tag(tag: &str, color: Color) -> Span<'static> {
         .fg(Color::Black)
         .bg(color)
         .bold()
+}
+
+/// Draws the rounded frame every screen sits in and returns the padded area inside it.
+fn framed(frame: &mut Frame, title: &str, info: Line) -> Rect {
+    let block = Block::bordered()
+        .border_type(BorderType::Rounded)
+        .border_style(Style::new().dark_gray())
+        .title(Line::from(format!(" {title} ")).bold().blue())
+        .title_top(info.right_aligned())
+        .padding(Padding::new(2, 2, 1, 0));
+    let inner = block.inner(frame.area());
+    frame.render_widget(block, frame.area());
+    inner
+}
+
+fn tier_color(tier: Tier) -> Color {
+    match tier {
+        Tier::Safe => Color::Green,
+        Tier::Unmerged => Color::Yellow,
+        Tier::Dirty => Color::Red,
+    }
 }
 
 fn width(text: &str) -> usize {

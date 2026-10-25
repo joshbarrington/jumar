@@ -24,7 +24,7 @@ impl Env {
 }
 
 pub struct Scan {
-    /// Source matches first, then the "other" group.
+    /// Grouped by repo; within a repo, source matches come before the "other" group.
     pub worktrees: Vec<Worktree>,
     /// Repos that failed to list; they are skipped rather than failing the whole scan.
     pub warnings: Vec<String>,
@@ -41,6 +41,7 @@ pub fn scan(env: &Env) -> Result<Scan> {
         }
     }
     worktrees.extend(others);
+    worktrees.sort_by(|a, b| (a.repo.file_name(), &a.repo).cmp(&(b.repo.file_name(), &b.repo)));
     Ok(Scan {
         worktrees,
         warnings,

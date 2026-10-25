@@ -13,7 +13,7 @@ use ratatui::style::{Color, Style, Stylize};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
-use super::{mode_tag, to_u16};
+use super::{framed, mode_tag, tier_color, to_u16};
 use crate::format;
 
 type Item = Result<Step, Blocked>;
@@ -103,8 +103,13 @@ impl Confirm {
     }
 
     pub fn render(&self, frame: &mut Frame) {
-        let [list, status] =
-            Layout::vertical([Constraint::Fill(1), Constraint::Length(1)]).areas(frame.area());
+        let area = framed(frame, "confirm", Line::default());
+        let [list, _, status] = Layout::vertical([
+            Constraint::Fill(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+        ])
+        .areas(area);
         let mut lines = Vec::new();
         let mut selected_line = 0;
         for (index, item) in self.items.iter().enumerate() {
@@ -168,8 +173,13 @@ impl Report {
     }
 
     pub fn render(&self, frame: &mut Frame) {
-        let [list, status] =
-            Layout::vertical([Constraint::Fill(1), Constraint::Length(1)]).areas(frame.area());
+        let area = framed(frame, "apply", Line::default());
+        let [list, _, status] = Layout::vertical([
+            Constraint::Fill(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+        ])
+        .areas(area);
         let mut lines = Vec::new();
         for (item, state) in self.items.iter().zip(&self.states) {
             let marker = match state {
@@ -219,7 +229,7 @@ fn describe<'a>(item: &'a Item, worktrees: &[Worktree], marker: Span<'a>) -> Lin
             spans.push(verb("REMOVE", Color::Red));
             spans.push(Span::raw(label(&remove.worktree)));
             spans.push(Span::raw("  "));
-            spans.push(Span::raw(format::tier_emoji(remove.tier)));
+            spans.push(Span::raw(format::tier_icon(remove.tier)).fg(tier_color(remove.tier)));
             spans.push(Span::raw(" "));
             spans.push(Span::raw(match (remove.branch(), remove.delete_branch) {
                 (None, _) => "detached".to_owned(),

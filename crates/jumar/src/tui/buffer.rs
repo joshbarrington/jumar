@@ -1,3 +1,4 @@
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver};
 use std::thread;
@@ -10,7 +11,7 @@ use jumar_core::model::{Health, Worktree};
 use jumar_core::plan::Line as BufferLine;
 use jumar_core::safety::Tier;
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::layout::{Constraint, Layout};
 use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
@@ -30,12 +31,14 @@ pub struct Buffer {
     tool_hint: String,
     herdr: Option<herdr::State>,
     herdr_updates: Receiver<herdr::State>,
+    home: PathBuf,
 }
 
 /// Display text for one cell of each column, computed once per frame.
 struct Row<'a> {
-    mark: &'static str,
-    repo: String,
+    /// `None` for a new line, which shows under whichever group it was typed in.
+    repo: Option<&'a Path>,
+    mark: Span<'static>,
     name: &'a str,
     branch: String,
     state: String,
@@ -44,6 +47,19 @@ struct Row<'a> {
     style: Style,
     state_style: Style,
 }
+
+/// One line of the scrolling list.
+enum Display<'a> {
+    Gap,
+    Group(&'a Path),
+    Row(usize),
+}
+
+const HEADERS: [&str; 5] = ["NAME", "BRANCH", "STATUS", "SOURCE", "HERDR"];
+const GAP: &str = "   ";
+/// Rows sit under their group's title; the mark column comes first.
+const INDENT: &str = "  ";
+const MARK_WIDTH: usize = 2;
 
 impl Buffer {
     pub fn new(scan: Scan, tools: &[Tool]) -> Self {
@@ -87,6 +103,7 @@ impl Buffer {
                 .join("  "),
             herdr: None,
             herdr_updates,
+            home: std::env::home_dir().unwrap_or_default(),
         }
     }
 
@@ -122,8 +139,8 @@ impl Buffer {
                     let renamed =
                         Some(name.as_str()) != worktree.path.file_name().and_then(|n| n.to_str());
                     Row {
-                        mark: format::tier_mark(result),
-                        repo: format::file_name(&worktree.repo),
+                        repo: Some(&worktree.repo),
+                        mark: mark(result),
                         name,
                         branch: format::branch(worktree.head.as_ref()),
                         state: format::state(worktree, result),
@@ -143,8 +160,8 @@ impl Buffer {
                     }
                 }
                 BufferLine::New(text) => Row {
-                    mark: "+ ",
-                    repo: String::new(),
+                    repo: None,
+                    mark: Span::raw("+").green(),
                     name: text,
                     branch: String::new(),
                     state: String::new(),
@@ -172,51 +189,61 @@ impl Buffer {
     }
 
     pub fn render(&mut self, frame: &mut Frame) {
-        let [list, status] =
-            Layout::vertical([Constraint::Fill(1), Constraint::Length(1)]).areas(frame.area());
+        let area = super::framed(frame, "jumar", self.summary());
+        let [header, list, _, status] = Layout::vertical([
+            Constraint::Length(1),
+            Constraint::Fill(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+        ])
+        .areas(area);
+        let rows = self.rows();
+        let widths = [
+            column_width(rows.iter().map(|r| r.name).chain([HEADERS[0]])),
+            column_width(rows.iter().map(|r| r.branch.as_str()).chain([HEADERS[1]])),
+            column_width(rows.iter().map(|r| r.state.as_str()).chain([HEADERS[2]])),
+            column_width(rows.iter().map(|r| r.source).chain([HEADERS[3]])),
+        ];
+        let display = group(&rows);
         let (row, col) = self.editor.cursor();
         let cursor_pos = self.editor.rows().position(|(index, _)| index == row);
+        let cursor_line = cursor_pos.and_then(|pos| {
+            display
+                .iter()
+                .position(|d| matches!(d, Display::Row(p) if *p == pos))
+        });
         let height = usize::from(list.height);
-        if let Some(pos) = cursor_pos {
-            if pos < self.scroll {
-                self.scroll = pos;
-            } else if pos >= self.scroll + height {
-                self.scroll = pos + 1 - height;
-            }
-        }
-        let rows = self.rows();
+        let scroll = cursor_line.map_or(self.scroll, |line| {
+            // Scrolling up to a group's first row shows its title too.
+            let top = match line.checked_sub(1).map(|l| &display[l]) {
+                Some(Display::Group(_)) => line - 1,
+                _ => line,
+            };
+            self.scroll.min(top).max((line + 1).saturating_sub(height))
+        });
 
-        let repo_width = column_width(rows.iter().map(|r| r.repo.as_str()));
-        let name_width = column_width(rows.iter().map(|r| r.name));
-        let branch_width = column_width(rows.iter().map(|r| r.branch.as_str()));
-        let lines: Vec<Line> = rows
+        let titles = HEADERS.map(|h| (h.to_owned(), Style::new().dark_gray().bold()));
+        frame.render_widget(columns(&Span::raw(""), titles, widths), header);
+        let lines: Vec<Line> = display
             .iter()
             .enumerate()
-            .skip(self.scroll)
+            .skip(scroll)
             .take(height)
-            .map(|(pos, r)| {
-                let line = Line::from(vec![
-                    Span::raw(r.mark),
-                    Span::raw(" "),
-                    Span::raw(pad(&r.repo, repo_width)).fg(Color::Blue),
+            .map(|(index, item)| match item {
+                Display::Gap => Line::default(),
+                Display::Group(repo) => Line::from(vec![
+                    Span::raw("\u{f401} ").blue(),
+                    Span::raw(format::file_name(repo)).blue().bold(),
                     Span::raw("  "),
-                    Span::styled(
-                        pad(r.name, name_width),
-                        r.style.add_modifier(Modifier::BOLD),
-                    ),
-                    Span::raw("  "),
-                    Span::raw(pad(&r.branch, branch_width)).fg(Color::Magenta),
-                    Span::raw("  "),
-                    Span::styled(r.state.clone(), r.state_style),
-                    Span::raw("  "),
-                    Span::raw(r.source).fg(Color::DarkGray),
-                    Span::raw("  "),
-                    r.herdr.clone(),
-                ]);
-                if Some(pos) == cursor_pos {
-                    line.bg(Color::Indexed(236))
-                } else {
-                    line
+                    Span::raw(format::tilde(repo, &self.home)).dark_gray(),
+                ]),
+                Display::Row(pos) => {
+                    let line = row_line(&rows[*pos], widths);
+                    if Some(index) == cursor_line {
+                        line.bg(Color::Indexed(236))
+                    } else {
+                        line
+                    }
                 }
             })
             .collect();
@@ -240,16 +267,16 @@ impl Buffer {
                 frame.set_cursor_position((status.x + to_u16(prompt_end), status.y));
             }
             Mode::Normal | Mode::Insert => {
-                if let Some(pos) = cursor_pos {
-                    let r = &rows[pos];
-                    let before: String = r.name.chars().take(col).collect();
-                    let x = width(r.mark) + 1 + repo_width + 2 + width(&before);
-                    let y = pos - self.scroll;
+                if let (Some(pos), Some(line)) = (cursor_pos, cursor_line) {
+                    let before: String = rows[pos].name.chars().take(col).collect();
+                    let x = width(INDENT) + MARK_WIDTH + width(&before);
+                    let y = line - scroll;
                     frame.set_cursor_position((list.x + to_u16(x), list.y + to_u16(y)));
                 }
             }
         }
-        self.render_summary(frame, status);
+        drop(rows);
+        self.scroll = scroll;
     }
 
     /// Mode tag followed by the prompt, filter or message. The cursor sits at its end in
@@ -278,7 +305,7 @@ impl Buffer {
         Line::from(spans)
     }
 
-    fn render_summary(&self, frame: &mut Frame, status: Rect) {
+    fn summary(&self) -> Line<'static> {
         let mut parts = Vec::new();
         if self.loading > 0 {
             parts.push(format!("loading {}", self.loading));
@@ -287,9 +314,63 @@ impl Buffer {
         if self.editor.is_modified() {
             parts.push("[+]".into());
         }
-        let summary = Line::from(format!("{} ", parts.join("  ")))
-            .dark_gray()
-            .right_aligned();
-        frame.render_widget(summary, status);
+        Line::from(format!(" {} ", parts.join("  "))).dark_gray()
     }
+}
+
+/// Lays rows out under a title for each repo, in the order they come.
+fn group<'a>(rows: &[Row<'a>]) -> Vec<Display<'a>> {
+    let mut display = Vec::new();
+    let mut current = None;
+    for (pos, row) in rows.iter().enumerate() {
+        if let Some(repo) = row.repo
+            && current != Some(repo)
+        {
+            if current.is_some() {
+                display.push(Display::Gap);
+            }
+            display.push(Display::Group(repo));
+            current = Some(repo);
+        }
+        display.push(Display::Row(pos));
+    }
+    display
+}
+
+fn row_line(row: &Row, widths: [usize; 4]) -> Line<'static> {
+    let cells = [
+        (row.name.to_owned(), row.style.add_modifier(Modifier::BOLD)),
+        (row.branch.clone(), Style::new().fg(Color::Magenta)),
+        (row.state.clone(), row.state_style),
+        (row.source.to_owned(), Style::new().fg(Color::DarkGray)),
+        (row.herdr.content.to_string(), row.herdr.style),
+    ];
+    columns(&row.mark, cells, widths)
+}
+
+/// The last column is left unpadded.
+fn columns(mark: &Span<'static>, cells: [(String, Style); 5], widths: [usize; 4]) -> Line<'static> {
+    let mut spans = vec![
+        Span::raw(INDENT),
+        Span::raw(pad(&mark.content, MARK_WIDTH)).style(mark.style),
+    ];
+    for (index, (text, style)) in cells.into_iter().enumerate() {
+        if index > 0 {
+            spans.push(Span::raw(GAP));
+        }
+        let text = widths
+            .get(index)
+            .map_or_else(|| text.clone(), |w| pad(&text, *w));
+        spans.push(Span::styled(text, style));
+    }
+    Line::from(spans)
+}
+
+fn mark(result: Option<&InspectResult>) -> Span<'static> {
+    let color = match result {
+        None => Color::DarkGray,
+        Some(Err(_)) => Color::Red,
+        Some(Ok(inspection)) => super::tier_color(inspection.tier),
+    };
+    Span::raw(format::tier_mark(result)).fg(color)
 }
