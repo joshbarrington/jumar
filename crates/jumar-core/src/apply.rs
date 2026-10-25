@@ -25,6 +25,8 @@ pub struct Remove {
     pub tier: Tier,
     /// `git status --short` lines for a dirty worktree: what force would discard.
     pub changes: Vec<String>,
+    /// An unmerged branch whose remote branch was deleted, often after its PR merged.
+    pub upstream_gone: bool,
     pub force: bool,
     pub delete_branch: bool,
     /// The herdr workspace showing this worktree; removing goes through herdr then.
@@ -164,11 +166,15 @@ fn remove(context: &Context, id: EntryId) -> Result<Step, String> {
     } else {
         Vec::new()
     };
+    let upstream_gone = tier == Tier::Unmerged
+        && worktree.health == Health::Healthy
+        && git::status(&worktree.path).is_ok_and(|s| s.upstream_gone);
     let has_branch = matches!(worktree.head, Some(Head::Branch(_)));
     Ok(Step::Remove(Remove {
         worktree: worktree.clone(),
         tier,
         changes,
+        upstream_gone,
         force: false,
         delete_branch: has_branch && tier.deletes_branch_by_default(),
         workspace: workspace_for(context, worktree).cloned(),

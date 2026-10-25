@@ -6,7 +6,8 @@ First release.
 
 - Edit git worktrees as a vim-style buffer: delete a line to remove a worktree, edit a name to
   rename it, add a line to create one, then `:w` to review and apply.
-- Graded removes: clean and merged, clean with unpushed commits, or dirty (needs force).
+- Graded removes: clean and merged, clean with unpushed commits, or dirty (needs force). A
+  branch whose remote branch was deleted is flagged "upstream gone" and never counts as pushed.
 - Finds Claude Code and herdr worktrees out of the box, plus configurable sources.
 - Runs in the terminal or as a herdr plugin in a floating pane, and shows herdr agent status.
 - `jumar list [--json]` for scripts, and `jumar init` shell functions to `cd` on Enter.

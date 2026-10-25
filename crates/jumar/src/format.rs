@@ -92,6 +92,9 @@ fn status(status: &Status) -> String {
     if status.behind > 0 {
         parts.push(format!("↓{}", status.behind));
     }
+    if status.upstream_gone {
+        parts.push("upstream gone".into());
+    }
     if parts.is_empty() {
         "clean".into()
     } else {
@@ -119,6 +122,17 @@ mod tests {
         };
 
         assert_eq!(status(&value), "3 changed, 1 untracked, ↑2, ↓1");
+    }
+
+    #[test]
+    fn status_should_flag_upstream_gone() {
+        let value = Status {
+            upstream: Some("origin/x".into()),
+            upstream_gone: true,
+            ..Status::default()
+        };
+
+        assert_eq!(status(&value), "upstream gone");
     }
 
     #[test]

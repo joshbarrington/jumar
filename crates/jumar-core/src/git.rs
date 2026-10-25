@@ -194,6 +194,9 @@ fn parse_worktree_block(block: &str) -> Result<WorktreeEntry> {
 pub struct Status {
     pub branch: Option<String>,
     pub upstream: Option<String>,
+    /// The upstream is set but its remote branch is gone, as after a merged PR's branch
+    /// is deleted; `ahead` and `behind` are then unknown and left at 0.
+    pub upstream_gone: bool,
     pub ahead: u32,
     pub behind: u32,
     pub changed: usize,
@@ -220,8 +223,10 @@ pub fn status(path: &Path) -> Result<Status> {
 /// Fails on a malformed `# branch.ab` header.
 pub fn parse_status(text: &str) -> Result<Status> {
     let mut status = Status::default();
+    let mut divergence = false;
     for line in text.lines() {
         if let Some(header) = line.strip_prefix("# ") {
+            divergence |= header.starts_with("branch.ab ");
             parse_status_header(header, &mut status)?;
         } else {
             match line.as_bytes().first() {
@@ -232,6 +237,7 @@ pub fn parse_status(text: &str) -> Result<Status> {
             }
         }
     }
+    status.upstream_gone = status.upstream.is_some() && !divergence;
     Ok(status)
 }
 
@@ -349,6 +355,21 @@ prunable gitdir file points to non-existent location
                 ..Status::default()
             };
             assert_eq!(parse_status(text).unwrap(), expected);
+        }
+
+        #[test]
+        fn flags_upstream_gone_without_divergence() {
+            let status =
+                parse_status("# branch.head feat\n# branch.upstream origin/feat\n").unwrap();
+
+            assert!(status.upstream_gone);
+        }
+
+        #[test]
+        fn leaves_upstream_gone_unset_with_divergence() {
+            let text = "# branch.upstream origin/feat\n# branch.ab +0 -0\n";
+
+            assert!(!parse_status(text).unwrap().upstream_gone);
         }
 
         #[test]

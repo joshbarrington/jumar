@@ -109,21 +109,46 @@ fn inspect_should_keep_default_branch_even_when_checked_out_in_worktree() {
     assert_eq!(inspect(&worktree).unwrap().tier, Tier::Unmerged);
 }
 
+impl Fixture {
+    fn add_remote(&self) {
+        let remote = self.dir.path().join("remote.git");
+        git(
+            self.dir.path(),
+            &["init", "-q", "--bare", remote.to_str().unwrap()],
+        );
+        git(
+            &self.repo(),
+            &["remote", "add", "origin", remote.to_str().unwrap()],
+        );
+    }
+}
+
 #[test]
 fn inspect_should_be_safe_when_unmerged_branch_fully_pushed() {
     let fx = Fixture::new();
-    let remote = fx.dir.path().join("remote.git");
-    git(
-        fx.dir.path(),
-        &["init", "-q", "--bare", remote.to_str().unwrap()],
-    );
-    git(
-        &fx.repo(),
-        &["remote", "add", "origin", remote.to_str().unwrap()],
-    );
+    fx.add_remote();
     let worktree = fx.add("feat");
     commit(&worktree.path);
     git(&worktree.path, &["push", "-q", "-u", "origin", "feat"]);
 
     assert_eq!(inspect(&worktree).unwrap().tier, Tier::Safe);
+}
+
+#[test]
+fn inspect_should_be_unmerged_when_upstream_deleted_with_local_commits() {
+    let fx = Fixture::new();
+    fx.add_remote();
+    let worktree = fx.add("feat");
+    commit(&worktree.path);
+    git(&worktree.path, &["push", "-q", "-u", "origin", "feat"]);
+    commit(&worktree.path);
+    git(
+        &worktree.path,
+        &["push", "-q", "origin", "--delete", "feat"],
+    );
+    git(&worktree.path, &["fetch", "-q", "--prune"]);
+
+    let inspection = inspect(&worktree).unwrap();
+
+    assert_eq!(inspection.tier, Tier::Unmerged);
 }

@@ -25,7 +25,7 @@ impl Tier {
 pub fn classify(status: &Status, merged: bool) -> Tier {
     if !status.is_clean() {
         Tier::Dirty
-    } else if merged || (status.upstream.is_some() && status.ahead == 0) {
+    } else if merged || (status.upstream.is_some() && !status.upstream_gone && status.ahead == 0) {
         Tier::Safe
     } else {
         Tier::Unmerged
@@ -82,6 +82,17 @@ mod tests {
         };
 
         assert_eq!(classify(&status, false), Tier::Safe);
+    }
+
+    #[test]
+    fn classify_should_be_unmerged_when_upstream_gone() {
+        let status = Status {
+            upstream: Some("origin/x".into()),
+            upstream_gone: true,
+            ..clean()
+        };
+
+        assert_eq!(classify(&status, false), Tier::Unmerged);
     }
 
     #[test]

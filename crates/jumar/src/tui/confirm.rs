@@ -451,6 +451,9 @@ fn remove_details(remove: &apply::Remove, home: &Path) -> Vec<Line<'static>> {
         Some(branch) => {
             let note = match remove.tier {
                 Tier::Safe => "merged or pushed, nothing is lost",
+                Tier::Unmerged if remove.upstream_gone => {
+                    "upstream gone, so probably merged; if not, deleting loses its commits"
+                }
                 Tier::Unmerged => "has commits found nowhere else; deleting loses them",
                 Tier::Dirty => "may have commits found nowhere else",
             };
