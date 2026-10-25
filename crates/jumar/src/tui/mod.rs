@@ -30,6 +30,7 @@ use ratatui::widgets::{Block, BorderType, Clear, Padding};
 use ratatui::{DefaultTerminal, Frame};
 
 use crate::discover::{self, Env};
+use crate::pick::{self, Use};
 use crate::tools;
 use buffer::Buffer;
 use confirm::{Confirm, Decision, Report};
@@ -37,11 +38,15 @@ use confirm::{Confirm, Decision, Report};
 pub enum Outcome {
     Quit,
     Open(PathBuf),
+    /// What `jumar pick` hands the agent.
+    Picked(String),
 }
 
-pub fn run() -> Result<Outcome> {
+/// `pick` turns Enter and Tab into choosing worktrees for an agent.
+pub fn run(pick: bool) -> Result<Outcome> {
     let env = Env::load()?;
-    let buffer = Buffer::new(discover::scan(&env)?, env.config.tools());
+    let mut buffer = Buffer::new(discover::scan(&env)?, env.config.tools());
+    buffer.pick = pick;
     let mut app = App {
         env,
         buffer,
@@ -163,7 +168,9 @@ impl App {
                 if report.quit_after {
                     return Ok(Some(Effect::Exit(Outcome::Quit)));
                 }
-                self.buffer = Buffer::new(discover::scan(&self.env)?, self.env.config.tools());
+                self.buffer = self
+                    .buffer
+                    .rescan(discover::scan(&self.env)?, self.env.config.tools());
                 self.screen = Screen::Edit;
             }
             Screen::Report(_) => {}
@@ -195,8 +202,21 @@ impl App {
                 }
                 Err(err) => editor.set_message(format!("reload failed: {err:#}")),
             },
-            Action::Open(_) if editor.is_modified() => {
+            Action::Open(_) | Action::Context(_) if editor.is_modified() => {
                 editor.set_message("unsaved changes (:w to apply, :q! to discard)");
+            }
+            Action::Open(id) if self.buffer.pick => {
+                return Some(Effect::Exit(Outcome::Picked(
+                    self.describe(Use::Work, &[id]),
+                )));
+            }
+            Action::Context(ids) if self.buffer.pick => {
+                return Some(Effect::Exit(Outcome::Picked(
+                    self.describe(Use::Context, &ids),
+                )));
+            }
+            Action::Context(_) => {
+                editor.set_message("Tab passes worktrees to an agent under `jumar pick`");
             }
             Action::Open(id) => {
                 let worktree = &self.buffer.worktrees[id.0];
@@ -254,6 +274,14 @@ impl App {
 }
 
 impl App {
+    fn describe(&self, use_: Use, ids: &[EntryId]) -> String {
+        let picked: Vec<_> = ids
+            .iter()
+            .map(|id| (&self.buffer.worktrees[id.0], self.buffer.state(*id)))
+            .collect();
+        pick::describe(use_, &picked)
+    }
+
     /// Rebuilds the list when worktrees came or went, but only while nothing is being
     /// edited; otherwise just refreshes the statuses in place.
     fn auto_refresh(&mut self) {
@@ -346,6 +374,7 @@ fn convert(event: KeyEvent) -> Option<Key> {
         KeyCode::Right => Key::Right,
         KeyCode::Up => Key::Up,
         KeyCode::Down => Key::Down,
+        KeyCode::Tab => Key::Tab,
         _ => return None,
     })
 }

@@ -18,6 +18,18 @@ curl -LsSf https://github.com/joshbarrington/jumar/releases/latest/download/juma
 herdr plugin install joshbarrington/jumar
 ```
 
+To pick worktrees from inside Claude Code, install the plugin, then ask Claude to "pick a
+worktree":
+
+```sh
+/plugin install jumar --marketplace joshbarrington/jumar
+```
+
+jumar opens over the session (in herdr, tmux or WezTerm). Enter tells Claude to work in the
+worktree; Tab, or `V` then Tab for several, passes them to the conversation as context. The
+skill in `skills/jumar` is plain instructions plus a launcher script around `jumar pick
+--output <file>`, so other agents that read skills can use it too.
+
 To `cd` into a worktree when you press Enter, add the shell function:
 
 ```sh
@@ -41,6 +53,7 @@ jumar init fish | source
 | `:w` `:wq` `:q` `:q!` | apply, apply and quit, quit |
 | `Enter` | go to the worktree (its herdr workspace inside herdr) |
 | `yp` | copy the worktree's path |
+| `Tab` | under `jumar pick`: pass the worktree (or `V` selection) to the agent as context |
 | `R` `:e` | reload, refreshing every status (`:e!` drops unsaved edits) |
 | `<Space>d` | open revdiff on the worktree's changes |
 | `<Space>r` | open reviewr in the worktree's herdr workspace |

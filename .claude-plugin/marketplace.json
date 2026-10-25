@@ -1,0 +1,15 @@
+{
+  "name": "jumar",
+  "description": "jumar, a git worktree manager, as a Claude Code plugin",
+  "owner": {
+    "name": "joshbarrington"
+  },
+  "plugins": [
+    {
+      "name": "jumar",
+      "source": "./",
+      "description": "Pick a git worktree in jumar's overlay, then work in it or pass it to the agent as context",
+      "version": "0.1.0"
+    }
+  ]
+}

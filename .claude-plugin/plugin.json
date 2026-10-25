@@ -1,0 +1,12 @@
+{
+  "name": "jumar",
+  "version": "0.1.0",
+  "description": "Pick a git worktree in jumar's overlay, then work in it or pass it to the agent as context",
+  "author": {
+    "name": "joshbarrington"
+  },
+  "repository": "https://github.com/joshbarrington/jumar",
+  "license": "MIT",
+  "keywords": ["git", "worktree", "tui"],
+  "skills": "./skills/"
+}

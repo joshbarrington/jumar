@@ -25,6 +25,8 @@ use crate::format::{self, InspectResult};
 pub struct Buffer {
     pub worktrees: Arc<[Worktree]>,
     pub editor: Editor,
+    /// Under `jumar pick`, where Enter and Tab choose worktrees for an agent.
+    pub pick: bool,
     results: Vec<Option<InspectResult>>,
     /// Worktrees other than main checkouts, for the title.
     linked: usize,
@@ -90,6 +92,7 @@ impl Buffer {
                 .collect(),
             loading: worktrees.len(),
             linked: worktrees.iter().filter(|w| !w.main).count(),
+            pick: false,
             inspections: inspect_all(&worktrees, discover::WORKERS),
             editor,
             worktrees,
@@ -111,6 +114,7 @@ impl Buffer {
             .cursor_entry()
             .map(|id| self.worktrees[id.0].path.clone());
         let mut next = Self::new(scan, tools);
+        next.pick = self.pick;
         let entry = at
             .and_then(|path| next.worktrees.iter().position(|w| w.path == path))
             .map(EntryId);
@@ -142,6 +146,10 @@ impl Buffer {
         if let Ok(state) = self.herdr_updates.try_recv() {
             self.herdr = Some(state);
         }
+    }
+
+    pub fn state(&self, id: EntryId) -> String {
+        format::state(&self.worktrees[id.0], self.results[id.0].as_ref())
     }
 
     /// Tiers known so far, by entry.
@@ -305,7 +313,15 @@ impl Buffer {
         let status_line = self.status_line();
         let prompt_end = status_line.width();
         frame.render_widget(Paragraph::new(status_line), status);
-        frame.render_widget(Line::from(hints([("?", "help")])).right_aligned(), status);
+        let keys: &[(&str, &str)] = if self.pick {
+            &[("⏎", "work here"), ("⇥", "add as context"), ("?", "help")]
+        } else {
+            &[("?", "help")]
+        };
+        frame.render_widget(
+            Line::from(hints(keys.iter().copied())).right_aligned(),
+            status,
+        );
 
         match self.editor.mode() {
             _ if !focused => {}

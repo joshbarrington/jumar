@@ -34,6 +34,7 @@ const SECTIONS: [(&str, &[(&str, &str)]); 4] = [
                 "go to the worktree (its herdr workspace inside herdr)",
             ),
             ("yp", "copy its path"),
+            ("Tab", "under jumar pick: pass it to the agent as context"),
             ("R :e", "reload and refresh status (:e! drops edits)"),
         ],
     ),

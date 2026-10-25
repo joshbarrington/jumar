@@ -9,6 +9,7 @@ pub enum Key {
     Ctrl(char),
     Esc,
     Enter,
+    Tab,
     Backspace,
     Left,
     Right,
@@ -33,6 +34,8 @@ pub enum Action {
     },
     Quit,
     Open(EntryId),
+    /// Hand these worktrees to an agent as context; `Tab`, on the cursor or selection.
+    Context(Vec<EntryId>),
     /// The key pressed after the `<Space>` leader, on an existing worktree.
     Tool {
         key: char,
@@ -243,7 +246,9 @@ impl Editor {
         let count = self.count.take();
         let n = count.unwrap_or(1);
         match (pending, key) {
-            (Pending::None, key) if self.mode == Mode::Visual => self.visual_key(key, count),
+            (Pending::None, key) if self.mode == Mode::Visual => {
+                return self.visual_key(key, count);
+            }
             (Pending::None, key) => return self.normal_key(key, count),
             (Pending::Goto, Key::Char('g')) => self.goto(count.map_or(0, |c| c.saturating_sub(1))),
             (Pending::Delete, Key::Char('d')) => self.delete_lines(n),
@@ -331,9 +336,13 @@ impl Editor {
                 self.mode = Mode::Filter;
             }
             Key::Enter => {
-                if let Some(Line::Existing { id, .. }) = self.current_row().map(|r| &self.lines[r])
-                {
-                    return Some(Action::Open(*id));
+                if let Some(id) = self.cursor_entry() {
+                    return Some(Action::Open(id));
+                }
+            }
+            Key::Tab => {
+                if let Some(id) = self.cursor_entry() {
+                    return Some(Action::Context(vec![id]));
                 }
             }
             _ => {}
@@ -341,8 +350,9 @@ impl Editor {
         None
     }
 
-    fn visual_key(&mut self, key: Key, count: Option<usize>) {
+    fn visual_key(&mut self, key: Key, count: Option<usize>) -> Option<Action> {
         match key {
+            Key::Tab => return self.context_selection(),
             Key::Char('j' | 'k' | 'G' | 'g') | Key::Up | Key::Down => {
                 self.normal_key(key, count);
             }
@@ -351,6 +361,21 @@ impl Editor {
             Key::Char('v' | 'V') | Key::Esc | Key::Ctrl('c') => self.mode = Mode::Normal,
             _ => {}
         }
+        None
+    }
+
+    fn context_selection(&mut self) -> Option<Action> {
+        let (first, last) = self.selection()?;
+        self.mode = Mode::Normal;
+        let ids: Vec<EntryId> = self
+            .rows()
+            .filter(|(row, _)| (first..=last).contains(row))
+            .filter_map(|(_, line)| match line {
+                Line::Existing { id, .. } => Some(*id),
+                Line::New(_) => None,
+            })
+            .collect();
+        (!ids.is_empty()).then_some(Action::Context(ids))
     }
 
     fn insert(&mut self, key: Key) {
@@ -845,6 +870,7 @@ mod tests {
                         "Esc" => Key::Esc,
                         "CR" => Key::Enter,
                         "BS" => Key::Backspace,
+                        "Tab" => Key::Tab,
                         "C-r" => Key::Ctrl('r'),
                         _ => return None,
                     };
@@ -1371,5 +1397,23 @@ mod tests {
         editor.restore_view(None, "b");
 
         assert_eq!(editor.rows().count(), 1);
+    }
+
+    #[test]
+    fn tab_should_give_cursor_entry_as_context() {
+        let mut editor = editor(&["a", "b"]);
+
+        let action = feed(&mut editor, "j<Tab>");
+
+        assert_eq!(action, Some(Action::Context(vec![EntryId(1)])));
+    }
+
+    #[test]
+    fn visual_tab_should_give_selected_entries_as_context() {
+        let mut editor = editor(&["a", "b", "c"]);
+
+        let action = feed(&mut editor, "Vj<Tab>");
+
+        assert_eq!(action, Some(Action::Context(vec![EntryId(0), EntryId(1)])));
     }
 }

@@ -16,6 +16,13 @@ title = "jumar"
 placement = "overlay"
 command = ["bin/jumar"]
 
+# For agents: the launcher in skills/jumar opens this with JUMAR_PICK_OUTPUT set.
+[[panes]]
+id = "pick"
+title = "jumar: pick"
+placement = "overlay"
+command = ["bin/jumar", "pick"]
+
 [[actions]]
 id = "open"
 title = "jumar: open"
