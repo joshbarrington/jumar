@@ -8,6 +8,14 @@ jumar finds Claude Code and herdr worktrees out of the box, plus any other workt
 repos it finds. It runs in the terminal or as a [herdr](https://herdr.dev) plugin in a
 floating pane.
 
+## Requirements
+
+- macOS or Linux
+- git 2.17 or newer
+- For `jumar pick` inside an agent session: herdr, tmux or WezTerm, to open the overlay
+- Optional: [herdr](https://herdr.dev), [revdiff](https://github.com/umputun/revdiff) and
+  reviewr for the herdr column and the tool presets
+
 ## Install
 
 ```sh
@@ -16,6 +24,8 @@ brew install joshbarrington/tap/jumar
 curl -LsSf https://github.com/joshbarrington/jumar/releases/latest/download/jumar-installer.sh | sh
 # or, as a herdr plugin
 herdr plugin install joshbarrington/jumar
+# or, from source
+cargo install --locked --git https://github.com/joshbarrington/jumar jumar
 ```
 
 To pick worktrees from inside Claude Code, install the plugin, then ask Claude to "pick a
@@ -122,6 +132,10 @@ command = ["git", "-c", "diff.external=difft", "diff", "{base}"]
 A config with two tools on one key, a new tool without a key or command, or an unknown
 placeholder fails to load with an error naming the tool.
 
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md). Changes are listed in [CHANGELOG.md](CHANGELOG.md).
+
 ## License
 
-MIT
+[MIT](LICENSE)
