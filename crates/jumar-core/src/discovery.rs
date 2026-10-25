@@ -70,6 +70,7 @@ pub fn scan_repo(repo: &Path, known: &[Worktree]) -> Result<Vec<Worktree>> {
             },
             locked: entry.locked,
             main: index == 0,
+            default_branch: None,
         })
         .filter(|w| !known.contains(w.path.as_path()))
         .collect();
@@ -100,6 +101,7 @@ fn read_worktree(dir: &Path, source: &str) -> Option<Worktree> {
         health,
         locked,
         main: false,
+        default_branch: None,
     })
 }
 

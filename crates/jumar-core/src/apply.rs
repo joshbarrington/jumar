@@ -214,7 +214,7 @@ fn create(
     } else {
         Start::From(match base {
             Some(base) => base.to_owned(),
-            None => default_base(&repo).map_err(git_err)?,
+            None => default_base(context, &repo).map_err(git_err)?,
         })
     };
     Ok(Create {
@@ -255,8 +255,13 @@ fn create_source<'a>(context: &'a Context, near: Option<EntryId>) -> Result<&'a 
         .ok_or_else(|| format!("no source named `{}`", context.default_source))
 }
 
-fn default_base(repo: &Path) -> Result<String> {
-    Ok(git::default_branches(repo)?
+fn default_base(context: &Context, repo: &Path) -> Result<String> {
+    let configured = context
+        .worktrees
+        .iter()
+        .find(|w| w.repo == repo)
+        .and_then(|w| w.default_branch.as_deref());
+    Ok(git::default_branches(repo, configured)?
         .first()
         .map_or_else(|| "HEAD".to_owned(), |r| git::short_ref(r).to_owned()))
 }

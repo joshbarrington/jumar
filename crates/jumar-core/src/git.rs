@@ -58,8 +58,11 @@ pub fn is_ancestor(dir: &Path, ancestor: &str, descendant: &str) -> Result<bool>
 ///
 /// Fails when git fails.
 pub fn branch_exists(repo: &Path, name: &str) -> Result<bool> {
-    let local = format!("refs/heads/{name}");
-    yes_no(repo, &["show-ref", "--verify", "--quiet", &local])
+    ref_exists(repo, &format!("refs/heads/{name}"))
+}
+
+fn ref_exists(repo: &Path, full_name: &str) -> Result<bool> {
+    yes_no(repo, &["show-ref", "--verify", "--quiet", full_name])
 }
 
 /// # Errors
@@ -72,13 +75,26 @@ pub fn is_valid_branch_name(repo: &Path, name: &str) -> Result<bool> {
 }
 
 /// The repo's default branch as remote-tracking and local refs, whichever exist:
-/// e.g. `["refs/remotes/origin/main", "refs/heads/main"]`. Without `origin/HEAD`, falls
-/// back to a local `main` or `master`.
+/// e.g. `["refs/remotes/origin/main", "refs/heads/main"]`. A `configured` name wins;
+/// otherwise `origin/HEAD`, falling back to a local `main` or `master`.
 ///
 /// # Errors
 ///
 /// Fails when git fails.
-pub fn default_branches(repo: &Path) -> Result<Vec<String>> {
+pub fn default_branches(repo: &Path, configured: Option<&str>) -> Result<Vec<String>> {
+    if let Some(name) = configured {
+        let candidates = [
+            format!("refs/remotes/origin/{name}"),
+            format!("refs/heads/{name}"),
+        ];
+        let mut refs = Vec::new();
+        for candidate in candidates {
+            if ref_exists(repo, &candidate)? {
+                refs.push(candidate);
+            }
+        }
+        return Ok(refs);
+    }
     let remote_head = spawn(
         repo,
         &["symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"],

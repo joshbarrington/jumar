@@ -37,6 +37,7 @@ fn render_should_fill_base_with_merge_base_of_default_branch() {
         health: Health::Healthy,
         locked: None,
         main: false,
+        default_branch: None,
     };
 
     let command = render(&["revdiff".into(), "{base}".into()], &worktree).unwrap();

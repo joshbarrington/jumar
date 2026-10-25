@@ -6,7 +6,7 @@ mod theme;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use jumar_core::apply::{self, Context};
@@ -76,7 +76,14 @@ struct App {
 impl App {
     fn run(&mut self, terminal: &mut DefaultTerminal) -> Result<Outcome> {
         let mut insert_shape = None;
+        let mut refreshed = Instant::now();
         loop {
+            if let Some(interval) = self.env.config.refresh_interval()
+                && refreshed.elapsed() >= interval
+            {
+                self.auto_refresh();
+                refreshed = Instant::now();
+            }
             self.buffer.receive();
             if let Screen::Report(report) = &mut self.screen {
                 report.receive();
@@ -105,11 +112,14 @@ impl App {
 
             let busy = self.buffer.is_loading()
                 || matches!(&self.screen, Screen::Report(r) if r.is_running());
-            let timeout = if busy {
+            let mut timeout = if busy {
                 Duration::from_millis(30)
             } else {
                 Duration::from_secs(60)
             };
+            if let Some(interval) = self.env.config.refresh_interval() {
+                timeout = timeout.min(interval.saturating_sub(refreshed.elapsed()));
+            }
             if !event::poll(timeout)? {
                 continue;
             }
@@ -179,8 +189,8 @@ impl App {
                 });
             }
             Action::Reload => match discover::scan(&self.env) {
-                Ok(worktrees) => {
-                    self.buffer = Buffer::new(worktrees, self.env.config.tools());
+                Ok(scan) => {
+                    self.buffer = self.buffer.rescan(scan, self.env.config.tools());
                     self.buffer.editor.set_message("reloaded");
                 }
                 Err(err) => editor.set_message(format!("reload failed: {err:#}")),
@@ -244,6 +254,24 @@ impl App {
 }
 
 impl App {
+    /// Rebuilds the list when worktrees came or went, but only while nothing is being
+    /// edited; otherwise just refreshes the statuses in place.
+    fn auto_refresh(&mut self) {
+        if !matches!(self.screen, Screen::Edit | Screen::Help) || self.buffer.is_loading() {
+            return;
+        }
+        let editor = &self.buffer.editor;
+        if !editor.is_modified()
+            && editor.mode() == Mode::Normal
+            && let Ok(scan) = discover::scan(&self.env)
+            && !self.buffer.shows(&scan)
+        {
+            self.buffer = self.buffer.rescan(scan, self.env.config.tools());
+            return;
+        }
+        self.buffer.refresh();
+    }
+
     fn run_tool(&mut self, key: char, id: EntryId) -> Option<Effect> {
         let editor = &mut self.buffer.editor;
         let tools = self.env.config.tools();

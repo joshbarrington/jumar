@@ -60,6 +60,7 @@ impl Fixture {
             health: Health::Healthy,
             locked: None,
             main: false,
+            default_branch: None,
         });
         path
     }

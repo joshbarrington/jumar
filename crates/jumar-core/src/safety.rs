@@ -38,7 +38,7 @@ pub fn classify(status: &Status, merged: bool) -> Tier {
 ///
 /// Fails when git fails.
 pub fn assess(worktree: &Worktree, status: &Status) -> Result<Tier> {
-    let defaults = git::default_branches(&worktree.repo)?;
+    let defaults = git::default_branches(&worktree.repo, worktree.default_branch.as_deref())?;
     let revision = match &worktree.head {
         Some(Head::Branch(name)) => {
             let local = format!("refs/heads/{name}");

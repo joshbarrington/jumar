@@ -183,6 +183,27 @@ impl Editor {
         self.pending == Pending::Leader
     }
 
+    /// The existing worktree under the cursor.
+    #[must_use]
+    pub fn cursor_entry(&self) -> Option<EntryId> {
+        match self.current_row().map(|row| &self.lines[row]) {
+            Some(Line::Existing { id, .. }) => Some(*id),
+            _ => None,
+        }
+    }
+
+    /// Takes over the filter of the editor this one replaces, with the cursor on `entry`.
+    pub fn restore_view(&mut self, entry: Option<EntryId>, filter: &str) {
+        if let Some(row) = entry.and_then(|entry| {
+            self.lines
+                .iter()
+                .position(|line| matches!(line, Line::Existing { id, .. } if *id == entry))
+        }) {
+            self.row = row;
+        }
+        self.set_filter(filter.to_owned());
+    }
+
     pub fn set_message(&mut self, message: impl Into<String>) {
         self.message = Some(message.into());
     }
@@ -1332,5 +1353,23 @@ mod tests {
     #[test]
     fn dd_should_do_nothing_when_everything_is_filtered_out() {
         assert_eq!(texts_after(&ABC, "/zzz<CR>dd"), ABC);
+    }
+
+    #[test]
+    fn restore_view_should_put_cursor_on_entry() {
+        let mut editor = editor(&["a", "b", "c"]);
+
+        editor.restore_view(Some(EntryId(2)), "");
+
+        assert_eq!(editor.cursor_entry(), Some(EntryId(2)));
+    }
+
+    #[test]
+    fn restore_view_should_reapply_filter() {
+        let mut editor = editor(&["a", "b", "c"]);
+
+        editor.restore_view(None, "b");
+
+        assert_eq!(editor.rows().count(), 1);
     }
 }

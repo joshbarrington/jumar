@@ -41,6 +41,7 @@ impl Fixture {
             health: Health::Healthy,
             locked: None,
             main: false,
+            default_branch: None,
         }
     }
 }
@@ -102,6 +103,7 @@ fn inspect_should_keep_default_branch_even_when_checked_out_in_worktree() {
         health: Health::Healthy,
         locked: None,
         main: false,
+        default_branch: None,
     };
 
     assert_eq!(inspect(&worktree).unwrap().tier, Tier::Unmerged);

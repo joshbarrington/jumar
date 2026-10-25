@@ -42,6 +42,12 @@ pub fn scan(env: &Env) -> Result<Scan> {
         }
     }
     worktrees.extend(others);
+    for worktree in &mut worktrees {
+        worktree.default_branch = env
+            .config
+            .default_branch(&worktree.repo, &env.home)
+            .map(str::to_owned);
+    }
     worktrees.sort_by(|a, b| {
         (a.repo.file_name(), &a.repo, !a.main).cmp(&(b.repo.file_name(), &b.repo, !b.main))
     });

@@ -9,7 +9,7 @@ use jumar_core::editor::{Editor, Entry, Mode};
 use jumar_core::herdr::{self, AgentStatus, Herdr};
 use jumar_core::inspect::inspect_all;
 use jumar_core::model::{Health, Worktree};
-use jumar_core::plan::Line as BufferLine;
+use jumar_core::plan::{EntryId, Line as BufferLine};
 use jumar_core::safety::Tier;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout};
@@ -80,13 +80,6 @@ impl Buffer {
                 ),
             })
             .collect();
-        let (tx, herdr_updates) = mpsc::channel();
-        thread::spawn(move || {
-            if let Ok(state) = Herdr::new().state() {
-                // The buffer may already be gone after a reload.
-                let _ = tx.send(state);
-            }
-        });
         let mut editor = Editor::new(entries);
         if let Some(warning) = scan.warnings.first() {
             editor.set_message(warning.clone());
@@ -106,9 +99,34 @@ impl Buffer {
                 .map(|t| (t.key.to_string(), t.name.clone()))
                 .collect(),
             herdr: None,
-            herdr_updates,
+            herdr_updates: read_herdr(),
             home: std::env::home_dir().unwrap_or_default(),
         }
+    }
+
+    /// A buffer for `scan` that keeps this one's cursor and filter.
+    pub fn rescan(&self, scan: Scan, tools: &[Tool]) -> Self {
+        let at = self
+            .editor
+            .cursor_entry()
+            .map(|id| self.worktrees[id.0].path.clone());
+        let mut next = Self::new(scan, tools);
+        let entry = at
+            .and_then(|path| next.worktrees.iter().position(|w| w.path == path))
+            .map(EntryId);
+        next.editor.restore_view(entry, self.editor.filter());
+        next
+    }
+
+    pub fn shows(&self, scan: &Scan) -> bool {
+        *self.worktrees == *scan.worktrees
+    }
+
+    /// Re-reads every status and herdr's state in the background, keeping the old ones on
+    /// screen until the new ones arrive.
+    pub fn refresh(&mut self) {
+        self.inspections = inspect_all(&self.worktrees, discover::WORKERS);
+        self.herdr_updates = read_herdr();
     }
 
     pub fn is_loading(&self) -> bool {
@@ -117,8 +135,9 @@ impl Buffer {
 
     pub fn receive(&mut self) {
         for (index, result) in self.inspections.try_iter() {
-            self.results[index] = Some(result);
-            self.loading -= 1;
+            if self.results[index].replace(result).is_none() {
+                self.loading -= 1;
+            }
         }
         if let Ok(state) = self.herdr_updates.try_recv() {
             self.herdr = Some(state);
@@ -363,6 +382,17 @@ impl Buffer {
         }
         Line::from(format!(" {} ", parts.join("  "))).fg(theme::GRAY)
     }
+}
+
+fn read_herdr() -> Receiver<herdr::State> {
+    let (tx, rx) = mpsc::channel();
+    thread::spawn(move || {
+        if let Ok(state) = Herdr::new().state() {
+            // The buffer may already be gone after a reload.
+            let _ = tx.send(state);
+        }
+    });
+    rx
 }
 
 /// Lays rows out under a title for each repo, in the order they come.

@@ -65,6 +65,11 @@ and cannot be renamed.
 
 ```toml
 default_create_source = "work"
+refresh_seconds = 5   # re-read statuses and herdr agents; 0 turns it off
+
+[[repo]]
+path = "~/work/app"
+default_branch = "develop"   # instead of origin/HEAD, main or master
 
 [[source]]
 name = "work"
@@ -77,6 +82,11 @@ key = "g"
 command = ["lazygit"]
 mode = "suspend"   # suspend | herdr-workspace | detach
 ```
+
+While jumar is open it refreshes every `refresh_seconds`. It adds and drops worktrees that
+came or went, but leaves the list alone while you have unsaved edits. A repo's
+`default_branch` decides what counts as merged, and is where `{base}` and new worktrees
+start from.
 
 Sources named `claude` or `herdr` adjust the presets. A tool runs with `<Space>` and its
 key. Tool commands can use `{path}`, `{repo}`, `{branch}`, `{base}` (the merge-base with

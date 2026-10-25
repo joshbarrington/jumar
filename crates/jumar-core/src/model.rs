@@ -35,4 +35,7 @@ pub struct Worktree {
     /// The repo's own checkout, listed so it can be opened but never moved or removed.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub main: bool,
+    /// The repo's configured default branch, overriding the one git reports.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default_branch: Option<String>,
 }

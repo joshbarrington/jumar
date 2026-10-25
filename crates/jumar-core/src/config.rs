@@ -1,5 +1,13 @@
 //! ```toml
 //! default_create_source = "work"
+//! # Re-read statuses and herdr agents this often while open; 0 turns it off.
+//! refresh_seconds = 5
+//!
+//! # The branch worktrees are checked against, and `{base}` and new worktrees start
+//! # from. Without one, origin/HEAD, then main or master.
+//! [[repo]]
+//! path = "~/work/app"
+//! default_branch = "develop"
 //!
 //! [[source]]
 //! name = "work"
@@ -27,6 +35,7 @@
 //! ```
 
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use serde::Deserialize;
 
@@ -82,9 +91,22 @@ pub enum ToolMode {
     Detach,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Repo {
+    /// The main checkout; a leading `~` is the home directory.
+    pub path: String,
+    pub default_branch: Option<String>,
+}
+
+const DEFAULT_REFRESH_SECONDS: u64 = 5;
+
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct File {
+    #[serde(default, rename = "repo")]
+    repos: Vec<Repo>,
+    refresh_seconds: Option<u64>,
     #[serde(default, rename = "source")]
     sources: Vec<Source>,
     #[serde(default, rename = "tool")]
@@ -95,6 +117,8 @@ struct File {
 /// The presets merged with the user's config file.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Config {
+    repos: Vec<Repo>,
+    refresh_seconds: u64,
     sources: Vec<Source>,
     tools: Vec<Tool>,
     default_create_source: Option<String>,
@@ -103,6 +127,8 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
+            repos: Vec::new(),
+            refresh_seconds: DEFAULT_REFRESH_SECONDS,
             sources: presets(),
             tools: preset_tools(),
             default_create_source: None,
@@ -125,6 +151,8 @@ impl Config {
             message,
         })?;
         Ok(Self {
+            repos: file.repos,
+            refresh_seconds: file.refresh_seconds.unwrap_or(DEFAULT_REFRESH_SECONDS),
             sources: merge_sources(&file.sources),
             tools,
             default_create_source: file.default_create_source,
@@ -162,6 +190,28 @@ impl Config {
     #[must_use]
     pub fn default_create_source(&self) -> Option<&str> {
         self.default_create_source.as_deref()
+    }
+
+    /// `None` when auto-refresh is off.
+    #[must_use]
+    pub fn refresh_interval(&self) -> Option<Duration> {
+        (self.refresh_seconds > 0).then(|| Duration::from_secs(self.refresh_seconds))
+    }
+
+    /// The configured default branch of the repo whose main checkout is `repo`.
+    #[must_use]
+    pub fn default_branch(&self, repo: &Path, home: &Path) -> Option<&str> {
+        self.repos
+            .iter()
+            .find(|r| {
+                let path = match r.path.strip_prefix('~') {
+                    Some(rest) => home.join(rest.trim_start_matches('/')),
+                    None => PathBuf::from(&r.path),
+                };
+                std::fs::canonicalize(&path).unwrap_or(path) == repo
+            })?
+            .default_branch
+            .as_deref()
     }
 }
 
@@ -398,6 +448,36 @@ mod tests {
             parse("[[tool]]\nname = \"x\"\nkey = \"x\"\ncommand = [\"x\"]\nmode = \"detach\"\n");
 
         assert_eq!(config.tools()[2].mode, ToolMode::Detach);
+    }
+
+    #[test]
+    fn refresh_interval_should_default_to_five_seconds() {
+        assert_eq!(parse("").refresh_interval(), Some(Duration::from_secs(5)));
+    }
+
+    #[test]
+    fn refresh_interval_should_be_off_when_zero() {
+        assert_eq!(parse("refresh_seconds = 0\n").refresh_interval(), None);
+    }
+
+    #[test]
+    fn default_branch_should_match_repo_under_home() {
+        let config = parse("[[repo]]\npath = \"~/app\"\ndefault_branch = \"develop\"\n");
+
+        let branch =
+            config.default_branch(Path::new("/nonexistent/h/app"), Path::new("/nonexistent/h"));
+
+        assert_eq!(branch, Some("develop"));
+    }
+
+    #[test]
+    fn default_branch_should_be_none_for_other_repo() {
+        let config = parse("[[repo]]\npath = \"/a\"\ndefault_branch = \"develop\"\n");
+
+        assert_eq!(
+            config.default_branch(Path::new("/b"), Path::new("/h")),
+            None
+        );
     }
 
     #[test]

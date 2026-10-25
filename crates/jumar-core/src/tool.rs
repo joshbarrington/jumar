@@ -21,7 +21,7 @@ struct Vars<'a> {
 pub fn render(command: &[String], worktree: &Worktree) -> Result<Vec<String>> {
     let uses = |placeholder: &str| command.iter().any(|arg| arg.contains(placeholder));
     let (base, default_branch) = if uses("{base}") || uses("{default_branch}") {
-        let default = git::default_branches(&worktree.repo)?
+        let default = git::default_branches(&worktree.repo, worktree.default_branch.as_deref())?
             .into_iter()
             .next()
             .ok_or_else(|| Error::NoDefaultBranch(worktree.repo.clone()))?;
