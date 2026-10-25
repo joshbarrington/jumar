@@ -42,12 +42,8 @@ pub fn scan(env: &Env) -> Result<Scan> {
         }
     }
     worktrees.extend(others);
-    worktrees.sort_by_key(|w| {
-        (
-            w.repo.file_name().map(ToOwned::to_owned),
-            w.repo.clone(),
-            !w.main,
-        )
+    worktrees.sort_by(|a, b| {
+        (a.repo.file_name(), &a.repo, !a.main).cmp(&(b.repo.file_name(), &b.repo, !b.main))
     });
     Ok(Scan {
         worktrees,

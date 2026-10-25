@@ -26,6 +26,8 @@ pub struct Buffer {
     pub worktrees: Arc<[Worktree]>,
     pub editor: Editor,
     results: Vec<Option<InspectResult>>,
+    /// Worktrees other than main checkouts, for the title.
+    linked: usize,
     loading: usize,
     inspections: Receiver<(usize, InspectResult)>,
     scroll: usize,
@@ -68,11 +70,7 @@ impl Buffer {
         let entries = worktrees
             .iter()
             .map(|w| Entry {
-                name: if w.main {
-                    "(main)".into()
-                } else {
-                    format::file_name(&w.path)
-                },
+                name: entry_name(w).to_owned(),
                 fixed: w.main,
                 keywords: format!(
                     "{} {} {}",
@@ -98,6 +96,7 @@ impl Buffer {
                 .take(worktrees.len())
                 .collect(),
             loading: worktrees.len(),
+            linked: worktrees.iter().filter(|w| !w.main).count(),
             inspections: inspect_all(&worktrees, discover::WORKERS),
             editor,
             worktrees,
@@ -141,11 +140,14 @@ impl Buffer {
                 BufferLine::Existing { id, name } => {
                     let worktree = &self.worktrees[id.0];
                     let result = self.results[id.0].as_ref();
-                    let renamed =
-                        Some(name.as_str()) != worktree.path.file_name().and_then(|n| n.to_str());
+                    let renamed = name != entry_name(worktree);
                     Row {
                         repo: Some(&worktree.repo),
-                        mark: mark(result),
+                        mark: if worktree.main {
+                            Span::raw("")
+                        } else {
+                            mark(result)
+                        },
                         name,
                         branch: format::branch(worktree.head.as_ref()),
                         state: format::state(worktree, result),
@@ -343,8 +345,7 @@ impl Buffer {
         if self.loading > 0 {
             parts.push(format!("loading {}", self.loading));
         }
-        let linked = self.worktrees.iter().filter(|w| !w.main).count();
-        parts.push(format!("{linked} worktrees"));
+        parts.push(format!("{} worktrees", self.linked));
         if self.editor.is_modified() {
             parts.push("[+]".into());
         }
@@ -404,6 +405,20 @@ fn columns(
     Line::from(spans)
 }
 
+/// The text a row starts with; any other text is a rename.
+fn entry_name(worktree: &Worktree) -> &str {
+    if worktree.main {
+        "(main)"
+    } else {
+        worktree
+            .path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("")
+    }
+}
+
+/// The removal-safety icon; main checkouts, which cannot be removed, get none.
 fn mark(result: Option<&InspectResult>) -> Span<'static> {
     let color = match result {
         None => theme::GRAY,

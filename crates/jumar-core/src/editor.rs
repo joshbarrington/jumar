@@ -79,7 +79,7 @@ struct Snapshot {
 #[derive(Debug)]
 pub struct Editor {
     keywords: Vec<String>,
-    fixed: HashSet<EntryId>,
+    fixed: Vec<bool>,
     original: Vec<Line>,
     lines: Vec<Line>,
     row: usize,
@@ -102,12 +102,10 @@ impl Editor {
     pub fn new(entries: Vec<Entry>) -> Self {
         let mut keywords = Vec::with_capacity(entries.len());
         let mut lines = Vec::with_capacity(entries.len());
-        let mut fixed = HashSet::new();
+        let mut fixed = Vec::with_capacity(entries.len());
         for (index, entry) in entries.into_iter().enumerate() {
             keywords.push(entry.keywords.to_lowercase());
-            if entry.fixed {
-                fixed.insert(EntryId(index));
-            }
+            fixed.push(entry.fixed);
             lines.push(Line::Existing {
                 id: EntryId(index),
                 name: entry.name,
@@ -451,7 +449,7 @@ impl Editor {
     }
 
     fn is_fixed(&self, row: usize) -> bool {
-        matches!(&self.lines[row], Line::Existing { id, .. } if self.fixed.contains(id))
+        matches!(&self.lines[row], Line::Existing { id, .. } if self.fixed[id.0])
     }
 
     /// The current row when it may be edited; a fixed one says so instead.
