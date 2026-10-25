@@ -234,7 +234,7 @@ impl Buffer {
             .map(|(index, item)| match item {
                 Display::Gap => Line::default(),
                 Display::Group(repo) => Line::from(vec![
-                    Span::raw("\u{f401} ").fg(theme::BLUE),
+                    Span::raw("\u{f418} ").fg(theme::BLUE),
                     Span::raw(format::file_name(repo)).fg(theme::BLUE).bold(),
                     Span::raw("  "),
                     Span::raw(format::tilde(repo, &self.home)).fg(theme::GRAY),
