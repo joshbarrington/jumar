@@ -8,6 +8,7 @@ First release.
   rename it, add a line to create one, then `:w` to review and apply.
 - Graded removes: clean and merged, clean with unpushed commits, or dirty (needs force). A
   branch whose remote branch was deleted is flagged "upstream gone" and never counts as pushed.
+- Just before a safe branch is deleted, jumar grades it again, and keeps it if it changed.
 - Finds Claude Code and herdr worktrees out of the box, plus configurable sources.
 - Runs in the terminal or as a herdr plugin in a floating pane, and shows herdr agent status.
 - `jumar list [--json]` for scripts, and `jumar init` shell functions to `cd` on Enter.
