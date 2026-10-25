@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 use jumar_core::config::{self, Config};
-use jumar_core::discovery::{repos, scan_repo, scan_sources};
+use jumar_core::discovery::{repo_containing, repos, scan_repo, scan_sources};
 use jumar_core::model::Worktree;
 
 pub const WORKERS: usize = 8;
@@ -35,7 +35,24 @@ pub fn scan(env: &Env) -> Result<Scan> {
     let mut worktrees = scan_sources(env.config.sources(), &env.home)?;
     let mut others = Vec::new();
     let mut warnings = Vec::new();
-    for repo in repos(&worktrees) {
+    // The current repo and configured ones are listed even before they have worktrees, so
+    // their main checkout is there to create the first one from.
+    let mut all = repos(&worktrees);
+    if let Some(repo) = std::env::current_dir()
+        .ok()
+        .and_then(|dir| repo_containing(&dir))
+        && !all.contains(&repo)
+    {
+        all.push(repo);
+    }
+    for path in env.config.repo_paths(&env.home) {
+        match repo_containing(&path) {
+            Some(repo) if !all.contains(&repo) => all.push(repo),
+            Some(_) => {}
+            None => warnings.push(format!("skipping {}: not a git repo", path.display())),
+        }
+    }
+    for repo in all {
         match scan_repo(&repo, &worktrees) {
             Ok(found) => others.extend(found),
             Err(err) => warnings.push(format!("skipping {}: {err}", repo.display())),

@@ -99,6 +99,15 @@ pub struct Repo {
     pub default_branch: Option<String>,
 }
 
+impl Repo {
+    fn expanded_path(&self, home: &Path) -> PathBuf {
+        match self.path.strip_prefix('~') {
+            Some(rest) => home.join(rest.trim_start_matches('/')),
+            None => PathBuf::from(&self.path),
+        }
+    }
+}
+
 const DEFAULT_REFRESH_SECONDS: u64 = 5;
 
 #[derive(Debug, Default, Deserialize)]
@@ -198,16 +207,19 @@ impl Config {
         (self.refresh_seconds > 0).then(|| Duration::from_secs(self.refresh_seconds))
     }
 
+    /// The `[[repo]]` paths, with a leading `~` expanded.
+    #[must_use]
+    pub fn repo_paths(&self, home: &Path) -> Vec<PathBuf> {
+        self.repos.iter().map(|r| r.expanded_path(home)).collect()
+    }
+
     /// The configured default branch of the repo whose main checkout is `repo`.
     #[must_use]
     pub fn default_branch(&self, repo: &Path, home: &Path) -> Option<&str> {
         self.repos
             .iter()
             .find(|r| {
-                let path = match r.path.strip_prefix('~') {
-                    Some(rest) => home.join(rest.trim_start_matches('/')),
-                    None => PathBuf::from(&r.path),
-                };
+                let path = r.expanded_path(home);
                 std::fs::canonicalize(&path).unwrap_or(path) == repo
             })?
             .default_branch
@@ -458,6 +470,15 @@ mod tests {
     #[test]
     fn refresh_interval_should_be_off_when_zero() {
         assert_eq!(parse("refresh_seconds = 0\n").refresh_interval(), None);
+    }
+
+    #[test]
+    fn repo_paths_should_expand_home() {
+        let config = parse("[[repo]]\npath = \"~/app\"\n\n[[repo]]\npath = \"/srv/api\"\n");
+
+        let paths = config.repo_paths(Path::new("/h"));
+
+        assert_eq!(paths, [PathBuf::from("/h/app"), PathBuf::from("/srv/api")]);
     }
 
     #[test]

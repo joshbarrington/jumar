@@ -6,7 +6,7 @@ use std::fs;
 use std::path::PathBuf;
 
 use jumar_core::config::Source;
-use jumar_core::discovery::{repos, scan_repo, scan_sources};
+use jumar_core::discovery::{repo_containing, repos, scan_repo, scan_sources};
 use jumar_core::model::{Head, Health, Worktree};
 use tempfile::TempDir;
 
@@ -179,4 +179,41 @@ fn scan_repo_should_mark_prunable_when_directory_deleted() {
     let others = scan_repo(&repos(&known)[0], &known).unwrap();
 
     assert_eq!(others[1].health, Health::Prunable);
+}
+
+#[test]
+fn repo_containing_should_return_main_checkout_from_subdirectory() {
+    let fx = Fixture::new();
+    let dir = fx.home.path().join("github/app/src");
+    fs::create_dir_all(&dir).unwrap();
+
+    assert_eq!(repo_containing(&dir), Some(fx.path("github/app")));
+}
+
+#[test]
+fn repo_containing_should_return_main_checkout_from_linked_worktree() {
+    let fx = Fixture::new();
+
+    let repo = repo_containing(&fx.path("elsewhere/other"));
+
+    assert_eq!(repo, Some(fx.path("github/app")));
+}
+
+#[test]
+fn repo_containing_should_be_none_outside_a_repo() {
+    let fx = Fixture::new();
+
+    assert_eq!(repo_containing(&fx.path("elsewhere")), None);
+}
+
+#[test]
+fn scan_repo_should_list_main_checkout_of_repo_without_worktrees() {
+    let home = tempfile::tempdir().unwrap();
+    let repo = home.path().join("app");
+    init_repo(&repo);
+    let repo = repo_containing(&repo).unwrap();
+
+    let found = scan_repo(&repo, &[]).unwrap();
+
+    assert_eq!((found.len(), found[0].main), (1, true));
 }

@@ -13,3 +13,5 @@ First release.
 - `jumar pick` and a Claude Code plugin to pick worktrees from inside an agent session.
 - Tools on `<Space>` keys, with `revdiff` and `reviewr` presets.
 - Auto-refresh and a per-repo default branch.
+- The current repo and `[[repo]]` entries are listed before they have worktrees, so you can
+  create the first one.

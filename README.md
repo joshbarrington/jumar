@@ -76,7 +76,8 @@ jumar init fish | source
 -  (red) uncommitted or untracked changes: needs force (`f`), and lists what would be lost.
 
 Each repo's own checkout is listed first as `(main)`: you can go to it or run tools on it,
-but not remove or rename it.
+but not remove or rename it. The repo you run jumar from, and every `[[repo]]` in the config,
+is listed even before it has any worktrees, so `o` on its `(main)` line creates the first one.
 
 A rename moves the directory, and renames the branch when it had the same name. Worktrees
 open in a herdr workspace go through herdr; one with a running agent needs force to remove
