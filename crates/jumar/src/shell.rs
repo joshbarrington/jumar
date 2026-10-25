@@ -23,7 +23,7 @@ const POSIX: &str = r#"jumar() {
     dir="$(cat -- "$tmp")"
     rm -f -- "$tmp"
     if [ -n "$dir" ] && [ "$dir" != "$PWD" ]; then
-        cd -- "$dir" || return
+        builtin cd -- "$dir" || return
     fi
     return $ret
 }
@@ -36,7 +36,7 @@ const FISH: &str = r#"function jumar
     set -l dir (cat -- $tmp)
     rm -f -- $tmp
     if test -n "$dir"; and test "$dir" != "$PWD"
-        cd -- $dir
+        builtin cd -- $dir
     end
     return $ret
 end
