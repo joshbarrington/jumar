@@ -197,7 +197,7 @@ impl Report {
         let footer = if self.is_running() {
             let total = count(|s| !matches!(s, State::Skipped(_)));
             Line::from(vec![
-                mode_tag("APPLYING", theme::BLUE),
+                mode_tag("APPLYING", theme::YELLOW),
                 Span::raw(format!("  {}/{total}", total - self.remaining)),
             ])
         } else {

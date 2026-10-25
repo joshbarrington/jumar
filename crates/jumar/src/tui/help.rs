@@ -76,7 +76,7 @@ pub fn render(frame: &mut Frame, tools: &[Tool]) {
         if index > 0 {
             lines.push(Line::default());
         }
-        lines.push(Line::from(Span::raw(*title).fg(theme::BLUE).bold()));
+        lines.push(Line::from(Span::raw(*title).fg(theme::YELLOW).bold()));
         for (key, action) in keys {
             lines.push(Line::from(vec![
                 Span::raw("  "),
@@ -87,7 +87,7 @@ pub fn render(frame: &mut Frame, tools: &[Tool]) {
         }
     }
     let footer = Line::from(vec![
-        mode_tag("HELP", theme::BLUE),
+        mode_tag("HELP", theme::YELLOW),
         Span::raw("  ? or Esc to close").fg(theme::GRAY),
     ]);
     let (list, status) = popup(frame, "keys", &lines, &footer);
