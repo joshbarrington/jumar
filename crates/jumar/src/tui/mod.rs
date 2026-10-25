@@ -314,14 +314,18 @@ fn hints<'a>(keys: impl IntoIterator<Item = (&'a str, &'a str)>) -> Vec<Span<'st
         .flat_map(|(key, action)| {
             [
                 Span::raw("  "),
-                Span::raw(format!(" {key} "))
-                    .fg(theme::YELLOW)
-                    .bg(theme::BG2)
-                    .bold(),
+                key_chip(key),
                 Span::raw(format!(" {action}")).fg(theme::TAN),
             ]
         })
         .collect()
+}
+
+fn key_chip(key: &str) -> Span<'static> {
+    Span::raw(format!(" {key} "))
+        .fg(theme::YELLOW)
+        .bg(theme::BG2)
+        .bold()
 }
 
 fn mode_tag(tag: &str, color: Color) -> Span<'static> {

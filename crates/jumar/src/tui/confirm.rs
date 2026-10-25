@@ -9,11 +9,12 @@ use jumar_core::model::{Head, Health, Worktree};
 use jumar_core::plan::Operation;
 use jumar_core::safety::Tier;
 use ratatui::Frame;
+use ratatui::layout::{Constraint, Layout};
 use ratatui::style::{Color, Style, Stylize};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
-use super::{hints, mode_tag, popup, theme, tier_color, to_u16};
+use super::{hints, key_chip, mode_tag, popup, theme, tier_color, to_u16};
 use crate::format;
 
 type Item = Result<Step, Blocked>;
@@ -105,10 +106,12 @@ impl Confirm {
     }
 
     pub fn render(&self, frame: &mut Frame) {
-        let mut lines = vec![summary(&self.items)];
+        let mut lines = Vec::new();
         let mut selected_line = 0;
         for (index, item) in self.items.iter().enumerate() {
-            lines.push(Line::default());
+            if index > 0 {
+                lines.push(Line::default());
+            }
             let is_selected = index == self.selected;
             if is_selected {
                 selected_line = lines.len();
@@ -139,10 +142,21 @@ impl Confirm {
             ("D", "delete branch"),
         ]));
         let footer = Line::from(footer);
-        let (list, status) = popup(frame, "review", &lines, &footer);
+        // The summary stays put below the scrolling list, so it is sized in but drawn apart.
+        let summary = summary(&self.items);
+        lines.extend([Line::default(), summary.clone()]);
+        let (area, status) = popup(frame, "review", &lines, &footer);
+        lines.truncate(lines.len() - 2);
+        let [list, _, summary_area] = Layout::vertical([
+            Constraint::Fill(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+        ])
+        .areas(area);
         let height = usize::from(list.height);
         let offset = (selected_line + 1).saturating_sub(height);
         frame.render_widget(Paragraph::new(lines).scroll((to_u16(offset), 0)), list);
+        frame.render_widget(summary, summary_area);
         frame.render_widget(footer, status);
     }
 }
@@ -253,7 +267,7 @@ fn summary(items: &[Item]) -> Line<'static> {
     .filter(|(n, _, _)| *n > 0)
     .map(|(n, verb, noun)| format!("{verb} {}", plural(n, noun)))
     .collect();
-    let mut spans = vec![Span::raw("y will ").bold()];
+    let mut spans = vec![key_chip("y"), Span::raw(" will ").bold()];
     if parts.is_empty() {
         spans.push(Span::raw("do nothing").bold());
     } else {
