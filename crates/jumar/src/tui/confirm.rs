@@ -398,6 +398,15 @@ fn details(item: &Item, home: &Path) -> Vec<Line<'static>> {
                 "branch",
                 match &create.start {
                     Start::Existing => format!("checks out existing {}", create.branch),
+                    Start::From(_)
+                        if let Some(fetch) = &create.fetch
+                            && let Some(number) = fetch.pull =>
+                    {
+                        format!(
+                            "new {} from PR #{number} on {}, fetched first",
+                            create.branch, fetch.remote
+                        )
+                    }
                     Start::From(base) if create.fetch.is_some() => {
                         format!("new {} from {base}, fetched first", create.branch)
                     }

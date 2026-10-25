@@ -89,7 +89,7 @@ runs.
 | `dd` | remove the worktree |
 | `v` `V` | select lines, then `d` to remove them all (`o` jumps to the other end) |
 | `cw` `ciw` `x` `i` `a` `A` `I` | rename it |
-| `o` `O` | create one: `name`, `repo/name`, or `name@base` |
+| `o` `O` | create one: `name`, `repo/name`, `name@base`, or `#123` for a PR |
 | `u` `Ctrl-r` | undo, redo |
 | `:w` `:wq` `:q` `:q!` | apply, apply and quit, quit |
 | `Enter` | go to the worktree (its herdr workspace inside herdr) |
@@ -134,6 +134,13 @@ default branch, or from `base`; the name of an existing branch checks that branc
 the start is a remote branch, such as `origin/main`, jumar fetches it first, so the new
 worktree starts from the latest commit. If the fetch fails, for example offline, the
 worktree starts from the last fetched commit and the report says so.
+
+`#123` checks out pull request 123 into a worktree and branch named `pr-123`; `name@#123`
+picks the name. jumar fetches the PR's head from the `upstream` remote when there is one,
+since that is where a fork's PRs live, and otherwise from `origin`. It reads GitHub's
+`refs/pull/123/head`, or GitLab's merge requests when the remote's URL mentions gitlab, so
+it needs no `gh` or `glab`. The new branch has no upstream, so push your own changes
+somewhere new.
 
 Each repo's own checkout is listed first as `(main)`: you can go to it or run tools on it,
 but not remove or rename it. The repo you run jumar from, and every `[[repo]]` in the

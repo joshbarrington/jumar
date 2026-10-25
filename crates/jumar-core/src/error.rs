@@ -39,6 +39,13 @@ pub enum Error {
     Herdr(String),
     #[error("{} has no default branch (no origin/HEAD, main or master)", .0.display())]
     NoDefaultBranch(PathBuf),
+    #[error("could not fetch PR #{number} from {remote}: {source}")]
+    PullFetch {
+        number: u32,
+        remote: String,
+        #[source]
+        source: Box<Error>,
+    },
     #[error("could not copy {}: {source}", path.display())]
     Copy {
         path: PathBuf,

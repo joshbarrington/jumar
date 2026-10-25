@@ -82,14 +82,20 @@ pub struct Create {
     pub copy: Vec<PathBuf>,
     /// Shell commands run in the new worktree once it exists.
     pub on_create: Vec<String>,
-    /// The remote branch a new branch starts from, fetched first.
-    pub fetch: Option<RemoteBranch>,
+    /// The remote ref a new branch starts from, fetched first.
+    pub fetch: Option<Fetch>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RemoteBranch {
+pub struct Fetch {
     pub remote: String,
-    pub branch: String,
+    /// The ref on the remote, like `refs/heads/main` or `refs/pull/123/head`.
+    pub from: String,
+    /// Where it lands locally, which is also where the new branch starts.
+    pub into: String,
+    /// The PR's number. A PR can't be created without its fetch; a branch falls back to
+    /// what was last fetched.
+    pub pull: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -204,6 +210,9 @@ fn create(
     near: Option<EntryId>,
 ) -> Result<Create, String> {
     let (repo_name, name) = split_target(target);
+    let (name, pull) = pull_request(name, base)?;
+    let name = name.as_str();
+    let base = base.filter(|_| pull.is_none());
     if name.contains('/') {
         return Err("a name cannot contain `/`; write repo/name".into());
     }
@@ -226,22 +235,28 @@ fn create(
     if !git::is_valid_branch_name(&repo, name).map_err(git_err)? {
         return Err(format!("`{name}` is not a valid branch name"));
     }
+    let mut fetch = None;
     let start = if git::branch_exists(&repo, name).map_err(git_err)? {
-        if base.is_some() {
+        if base.is_some() || pull.is_some() {
             return Err(format!(
-                "branch `{name}` already exists; drop @base to check it out"
+                "branch `{name}` already exists; write just `{name}` to check it out"
             ));
         }
         Start::Existing
+    } else if let Some(number) = pull {
+        let pull = pull_fetch(&repo, number)?;
+        let start = Start::From(pull.into.clone());
+        fetch = Some(pull);
+        start
     } else {
-        Start::From(match base {
+        let base = match base {
             Some(base) => base.to_owned(),
             None => default_base(context, &repo).map_err(git_err)?,
-        })
-    };
-    let fetch = match &start {
-        Start::From(base) if context.config.fetch_on_create() => remote_branch(&repo, base),
-        _ => None,
+        };
+        if context.config.fetch_on_create() {
+            fetch = remote_branch(&repo, &base);
+        }
+        Start::From(base)
     };
     let setup = context.config.repo(&repo, context.home);
     let copy = match setup {
@@ -261,17 +276,58 @@ fn create(
     })
 }
 
+/// The branch name and PR number of a create line: `#123` is branch `pr-123`, and
+/// `name@#123` names it.
+fn pull_request(name: &str, base: Option<&str>) -> Result<(String, Option<u32>), String> {
+    let number = |text: &str| {
+        text.parse::<u32>()
+            .map_err(|_| format!("`#{text}` is not a PR number"))
+    };
+    match (name.strip_prefix('#'), base.map(|b| b.strip_prefix('#'))) {
+        (Some(n), None) => {
+            let n = number(n)?;
+            Ok((format!("pr-{n}"), Some(n)))
+        }
+        (Some(_), Some(_)) => Err("write name@#123 to name a PR's worktree".into()),
+        (None, Some(Some(n))) => Ok((name.to_owned(), Some(number(n)?))),
+        (None, _) => Ok((name.to_owned(), None)),
+    }
+}
+
+/// PR `number`'s head from `upstream`, where a fork's PRs live, or else `origin`.
+fn pull_fetch(repo: &Path, number: u32) -> Result<Fetch, String> {
+    let remotes = git::run(repo, &["remote"]).map_err(|e| e.to_string())?;
+    let remote = ["upstream", "origin"]
+        .into_iter()
+        .find(|name| remotes.lines().any(|r| r == *name))
+        .ok_or("no upstream or origin remote to fetch the PR from")?;
+    let url = git::run(repo, &["remote", "get-url", remote]).unwrap_or_default();
+    let from = if url.contains("gitlab") {
+        format!("refs/merge-requests/{number}/head")
+    } else {
+        format!("refs/pull/{number}/head")
+    };
+    Ok(Fetch {
+        remote: remote.to_owned(),
+        from,
+        into: format!("refs/remotes/{remote}/pr/{number}"),
+        pull: Some(number),
+    })
+}
+
 /// `base` as a branch of one of the repo's remotes, like `origin/main`.
-fn remote_branch(repo: &Path, base: &str) -> Option<RemoteBranch> {
+fn remote_branch(repo: &Path, base: &str) -> Option<Fetch> {
     let base = base.strip_prefix("refs/remotes/").unwrap_or(base);
     let remotes = git::run(repo, &["remote"]).ok()?;
     remotes
         .lines()
         .filter_map(|remote| {
             let branch = base.strip_prefix(remote)?.strip_prefix('/')?;
-            Some(RemoteBranch {
+            Some(Fetch {
                 remote: remote.to_owned(),
-                branch: branch.to_owned(),
+                from: format!("refs/heads/{branch}"),
+                into: format!("refs/remotes/{remote}/{branch}"),
+                pull: None,
             })
         })
         // A remote named `a/b` beats `a` for `a/b/c`.
@@ -418,11 +474,18 @@ pub fn execute(step: &Step, herdr: &Herdr) -> Result<Vec<String>> {
         }
         Step::Create(create) => {
             if let Some(fetch) = &create.fetch
-                && let Err(err) = git::fetch(&create.repo, &fetch.remote, &fetch.branch)
+                && let Err(err) = git::fetch(&create.repo, &fetch.remote, &fetch.from, &fetch.into)
             {
+                if let Some(number) = fetch.pull {
+                    return Err(Error::PullFetch {
+                        number,
+                        remote: fetch.remote.clone(),
+                        source: Box::new(err),
+                    });
+                }
                 notes.push(format!(
-                    "could not fetch {}/{}, so it starts from the last fetched commit: {err}",
-                    fetch.remote, fetch.branch
+                    "could not fetch {}, so it starts from the last fetched commit: {err}",
+                    git::short_ref(&fetch.into)
                 ));
             }
             let path = utf8(&create.path)?;

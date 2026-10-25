@@ -474,8 +474,8 @@ fn prepare_create_should_fetch_the_remote_default_branch() {
 
     let fetch = create.fetch.unwrap();
     assert_eq!(
-        (fetch.remote.as_str(), fetch.branch.as_str()),
-        ("origin", "main")
+        (fetch.from.as_str(), fetch.into.as_str()),
+        ("refs/heads/main", "refs/remotes/origin/main")
     );
 }
 
@@ -531,6 +531,125 @@ fn execute_create_should_note_a_failed_fetch_and_still_create() {
         notes[0].contains("could not fetch origin/main"),
         "{notes:?}"
     );
+}
+
+impl Fixture {
+    /// Adds a remote named `remote` at `dir/remote.git` holding PR `number`'s head under
+    /// `pulls` (`pull` or `merge-requests`), one commit past main. Returns that commit.
+    fn add_pull(&self, remote: &str, dir: &str, pulls: &str, number: u32) -> String {
+        let url = self.home.join(dir).join("remote.git");
+        git(&self.home, &["init", "-q", "--bare", url.to_str().unwrap()]);
+        git(
+            &self.repo(),
+            &["remote", "add", remote, url.to_str().unwrap()],
+        );
+        let work = self.home.join(format!("{dir}-pr"));
+        git(
+            &self.repo(),
+            &["worktree", "add", "-q", "--detach", work.to_str().unwrap()],
+        );
+        git(&work, &["commit", "-q", "--allow-empty", "-m", "pr"]);
+        let refspec = format!("HEAD:refs/{pulls}/{number}/head");
+        git(&work, &["push", "-q", remote, &refspec]);
+        head(&work)
+    }
+}
+
+#[test]
+fn prepare_create_should_name_a_pr_worktree_after_its_number() {
+    let fx = Fixture::new();
+    fx.add_pull("origin", "gh", "pull", 7);
+
+    let create = fx.create("#7", None).unwrap();
+
+    let fetch = create.fetch.unwrap();
+    assert_eq!(
+        (create.branch.as_str(), fetch.from.as_str(), fetch.pull),
+        ("pr-7", "refs/pull/7/head", Some(7))
+    );
+}
+
+#[test]
+fn prepare_create_should_use_the_given_name_for_a_pr() {
+    let fx = Fixture::new();
+    fx.add_pull("origin", "gh", "pull", 7);
+
+    let create = fx.create("review", Some("#7")).unwrap();
+
+    assert_eq!(create.branch, "review");
+}
+
+#[test]
+fn prepare_create_should_prefer_upstream_for_a_pr() {
+    let fx = Fixture::new();
+    fx.add_pull("origin", "fork", "pull", 1);
+    fx.add_pull("upstream", "main-repo", "pull", 7);
+
+    let create = fx.create("#7", None).unwrap();
+
+    assert_eq!(create.fetch.unwrap().remote, "upstream");
+}
+
+#[test]
+fn prepare_create_should_use_merge_requests_on_gitlab() {
+    let fx = Fixture::new();
+    fx.add_pull("origin", "gitlab", "merge-requests", 7);
+
+    let create = fx.create("#7", None).unwrap();
+
+    assert_eq!(create.fetch.unwrap().from, "refs/merge-requests/7/head");
+}
+
+#[test]
+fn prepare_create_should_block_a_bad_pr_number() {
+    let fx = Fixture::new();
+    fx.add_pull("origin", "gh", "pull", 7);
+
+    let blocked = fx.create("#seven", None).unwrap_err();
+
+    assert!(
+        blocked.reason.contains("not a PR number"),
+        "{}",
+        blocked.reason
+    );
+}
+
+#[test]
+fn prepare_create_should_block_a_pr_without_a_remote() {
+    let fx = Fixture::new();
+
+    let blocked = fx.create("#7", None).unwrap_err();
+
+    assert!(
+        blocked.reason.contains("no upstream or origin"),
+        "{}",
+        blocked.reason
+    );
+}
+
+#[test]
+fn execute_create_should_check_out_the_pr_head() {
+    let fx = Fixture::new();
+    let pr = fx.add_pull("origin", "gh", "pull", 7);
+    let create = fx.create("#7", None).unwrap();
+    let path = create.path.clone();
+
+    apply::execute(&Step::Create(create), &Herdr::new()).unwrap();
+
+    assert_eq!(head(&path), pr);
+}
+
+#[test]
+fn execute_create_should_fail_without_creating_when_the_pr_is_missing() {
+    let fx = Fixture::new();
+    fx.add_pull("origin", "gh", "pull", 7);
+    let create = fx.create("#8", None).unwrap();
+    let path = create.path.clone();
+
+    let err = apply::execute(&Step::Create(create), &Herdr::new()).unwrap_err();
+
+    assert!(err.to_string().contains("could not fetch PR #8"), "{err}");
+    assert!(!path.exists());
 }
 
 /// A herdr stand-in that logs its arguments and succeeds without touching anything.

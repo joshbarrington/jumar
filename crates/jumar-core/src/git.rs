@@ -37,14 +37,14 @@ fn failure(dir: &Path, args: &[&str], output: &Output) -> Error {
     }
 }
 
-/// Updates `remote`'s `branch` in the repo's remote-tracking refs. Never prompts for
+/// Fetches `from`, a ref on `remote`, into the local ref `into`. Never prompts for
 /// credentials, since the terminal belongs to the TUI.
 ///
 /// # Errors
 ///
 /// Fails when git cannot start or the fetch fails.
-pub fn fetch(repo: &Path, remote: &str, branch: &str) -> Result<()> {
-    let refspec = format!("+refs/heads/{branch}:refs/remotes/{remote}/{branch}");
+pub fn fetch(repo: &Path, remote: &str, from: &str, into: &str) -> Result<()> {
+    let refspec = format!("+{from}:{into}");
     let args = ["fetch", "--quiet", "--no-tags", remote, &refspec];
     let output = Command::new("git")
         .arg("-C")
