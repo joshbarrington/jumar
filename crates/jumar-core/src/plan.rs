@@ -10,7 +10,7 @@ pub struct EntryId(pub usize);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Line {
-    /// `dir branch`, split by [`columns`]. A worktree without a branch, such as a
+    /// `dir branch`, split by [`existing_columns`]. A worktree without a branch, such as a
     /// detached checkout, has only its directory.
     Existing { id: EntryId, text: String },
     /// Raw text, parsed by [`parse_target`]; the target is resolved to a repo and source
@@ -41,7 +41,19 @@ pub enum Operation {
     },
 }
 
-/// The directory and the rest of a line, split at the first run of spaces.
+/// An existing line's directory and branch. A branch cannot contain spaces, so it is the
+/// last word, and the directory is everything before it, spaces and all. A line for a
+/// worktree without a branch is all directory.
+#[must_use]
+pub fn existing_columns(text: &str, has_branch: bool) -> (&str, &str) {
+    let text = text.trim();
+    match text.rfind(char::is_whitespace) {
+        Some(at) if has_branch => (text[..at].trim_end(), text[at..].trim_start()),
+        _ => (text, ""),
+    }
+}
+
+/// A new line's directory and the rest, split at the first run of spaces.
 #[must_use]
 pub fn columns(text: &str) -> (&str, &str) {
     let text = text.trim_start();
@@ -101,7 +113,8 @@ pub enum TargetError {
 }
 
 /// Parses a new line's text. Splits on the first `@`, then on spaces, then on the first
-/// `:`; git forbids all three in branch names, so no split is ambiguous.
+/// `:`. git forbids spaces and `:` in branch names, but not `@`, so a branch such as
+/// `jb@fix` cannot be written here.
 ///
 /// # Errors
 ///
@@ -177,10 +190,6 @@ pub enum PlanError {
     Collision { line: usize, path: PathBuf },
     #[error("line {line}: write the branch after the directory")]
     MissingBranch { line: usize },
-    #[error("line {line}: a checkout without a branch has no branch to rename")]
-    NoBranch { line: usize },
-    #[error("line {line}: write only a directory and a branch")]
-    TooManyWords { line: usize },
     #[error("line {line}: {source}")]
     Target {
         line: usize,
@@ -289,8 +298,6 @@ impl PlanError {
             | Self::Unhealthy { line }
             | Self::Collision { line, .. }
             | Self::MissingBranch { line }
-            | Self::NoBranch { line }
-            | Self::TooManyWords { line }
             | Self::Target { line, .. } => *line,
         }
     }
@@ -304,15 +311,14 @@ struct Edit {
 
 /// The edit a `dir branch` line asks for, or `None` when it changes neither.
 fn edit(worktree: &Worktree, text: &str, line: usize) -> Result<Option<Edit>, PlanError> {
-    let (dir, branch) = columns(text);
-    let rename_branch = match (&worktree.head, branch) {
-        (Some(Head::Branch(_)), "") => return Err(PlanError::MissingBranch { line }),
-        (Some(Head::Branch(_)), new) if new.contains(char::is_whitespace) => {
-            return Err(PlanError::TooManyWords { line });
+    let has_branch = matches!(worktree.head, Some(Head::Branch(_)));
+    let (dir, branch) = existing_columns(text, has_branch);
+    let rename_branch = match &worktree.head {
+        Some(Head::Branch(_)) if branch.is_empty() => {
+            return Err(PlanError::MissingBranch { line });
         }
-        (Some(Head::Branch(old)), new) => (new != old).then(|| new.to_owned()),
-        (_, "") => None,
-        (_, _) => return Err(PlanError::NoBranch { line }),
+        Some(Head::Branch(old)) => (branch != old).then(|| branch.to_owned()),
+        _ => None,
     };
     let to = (Some(dir) != dir_name(&worktree.path)).then(|| worktree.path.with_file_name(dir));
     if to.is_none() && rename_branch.is_none() {
@@ -467,13 +473,13 @@ mod tests {
     }
 
     #[test]
-    fn plan_should_reject_a_branch_for_a_detached_checkout() {
+    fn plan_should_read_a_detached_line_as_all_directory() {
         let mut original = original();
         original[0].head = Some(Head::Detached("0123".into()));
 
-        let errors = plan(&original, &[keep(0, "a x"), keep(1, "b feature/b")]).unwrap_err();
+        let ops = plan(&original, &[keep(0, "a x"), keep(1, "b feature/b")]).unwrap();
 
-        assert_eq!(errors, [PlanError::NoBranch { line: 1 }]);
+        assert_eq!(ops, [moved(0, Some("/w/a x"), None)]);
     }
 
     #[test]
@@ -484,10 +490,19 @@ mod tests {
     }
 
     #[test]
-    fn plan_should_reject_a_third_word() {
-        let errors = plan(&original(), &[keep(0, "a a x"), keep(1, "b feature/b")]).unwrap_err();
+    fn plan_should_leave_a_directory_with_spaces_alone() {
+        let original = vec![worktree("/w/my dir", "feat")];
 
-        assert_eq!(errors, [PlanError::TooManyWords { line: 1 }]);
+        assert_eq!(plan(&original, &[keep(0, "my dir feat")]), Ok(vec![]));
+    }
+
+    #[test]
+    fn plan_should_take_the_last_word_as_the_branch() {
+        let original = vec![worktree("/w/my dir", "feat")];
+
+        let ops = plan(&original, &[keep(0, "my dir feat/x")]).unwrap();
+
+        assert_eq!(ops, [moved(0, None, Some("feat/x"))]);
     }
 
     #[test]

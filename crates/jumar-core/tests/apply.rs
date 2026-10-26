@@ -398,6 +398,58 @@ fn prepare_move_should_rename_the_branch_of_a_locked_worktree() {
 }
 
 #[test]
+fn prepare_create_should_read_a_repo_named_prefix_as_part_of_the_branch() {
+    let create = Fixture::new().create("app/v2", None).unwrap();
+
+    assert_eq!(create.branch, "app/v2");
+}
+
+#[test]
+fn prepare_should_block_a_second_line_whose_branch_nests_under_another() {
+    let results = Fixture::new().prepare_all(vec![create_op("jb"), create_op("jb/a")]);
+
+    assert_eq!(
+        results[1].as_ref().unwrap_err().reason,
+        "another line's branch `jb` stops git from making `jb/a`"
+    );
+}
+
+#[test]
+fn prepare_should_block_a_create_of_a_branch_an_earlier_remove_takes() {
+    let fx = Fixture::new();
+
+    let results = fx.prepare_all(vec![
+        Operation::Remove { id: EntryId(0) },
+        create_op("other feat"),
+    ]);
+
+    assert_eq!(
+        results[1].as_ref().unwrap_err().reason,
+        "this save also removes the worktree of branch `feat`; apply that first"
+    );
+}
+
+#[test]
+fn prepare_should_block_a_create_of_a_branch_an_earlier_move_renames() {
+    let fx = Fixture::new();
+    let operations = vec![
+        Operation::Move {
+            id: EntryId(0),
+            to: None,
+            rename_branch: Some("feat2".into()),
+        },
+        create_op("other feat"),
+    ];
+
+    let results = fx.prepare_all(operations);
+
+    assert_eq!(
+        results[1].as_ref().unwrap_err().reason,
+        "this save also renames branch `feat`; apply that first"
+    );
+}
+
+#[test]
 fn prepare_should_block_a_second_line_using_the_same_directory() {
     let fx = Fixture::new();
     let results = fx.prepare_all(vec![create_op("jb/fix"), create_op("jb-fix")]);
@@ -497,16 +549,6 @@ fn prepare_create_should_read_a_slashed_name_as_a_branch() {
 }
 
 #[test]
-fn prepare_create_should_point_old_repo_syntax_at_the_colon() {
-    let blocked = Fixture::new().create("app/fix", None).unwrap_err();
-
-    assert_eq!(
-        blocked.reason,
-        "`app` is a repo; write `app:fix` to create there"
-    );
-}
-
-#[test]
 fn execute_create_should_check_out_an_existing_slashed_branch() {
     let fx = Fixture::new();
     git(&fx.repo(), &["branch", "alice/spike"]);
@@ -517,22 +559,6 @@ fn execute_create_should_check_out_an_existing_slashed_branch() {
 
     let branch = git::run(&path, &["branch", "--show-current"]).unwrap();
     assert_eq!(branch.trim(), "alice/spike");
-}
-
-#[test]
-fn prepare_create_should_point_old_syntax_at_the_colon_when_repo_names_repeat() {
-    let mut fx = Fixture::new();
-    let mut twin = fx.worktrees[0].clone();
-    twin.repo = fx.home.join("other/app");
-    fx.worktrees.push(twin);
-
-    let blocked = fx.create("app/fix", None).unwrap_err();
-
-    assert!(
-        blocked.reason.starts_with("`app` is a repo"),
-        "{}",
-        blocked.reason
-    );
 }
 
 #[test]

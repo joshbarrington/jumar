@@ -6,7 +6,6 @@ use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use jumar_core::config::Tool;
-use jumar_core::discovery;
 use jumar_core::editor::{Editor, Entry, Mode};
 use jumar_core::herdr::{self, AgentStatus, Herdr};
 use jumar_core::inspect::inspect_all;
@@ -47,6 +46,8 @@ struct Row<'a> {
     /// The line's whole text, which the cursor moves through.
     text: &'a str,
     name: &'a str,
+    /// The typed branch within `text`; `None` when the line has no branch to edit.
+    branch_text: Option<&'a str>,
     branch: String,
     branch_style: Style,
     /// What a new line will create, or why it can't, shown dim beneath it.
@@ -190,9 +191,10 @@ impl Buffer {
                 BufferLine::Existing { id, text } => {
                     let worktree = &self.worktrees[id.0];
                     let result = self.results[id.0].as_ref();
-                    let (name, rest) = plan::columns(text);
+                    let editable = !worktree.main && matches!(worktree.head, Some(Head::Branch(_)));
+                    let (name, rest) = plan::existing_columns(text, editable);
                     let (branch, renamed_branch) = match &worktree.head {
-                        Some(Head::Branch(old)) if !worktree.main => (rest.to_owned(), rest != old),
+                        Some(Head::Branch(old)) if editable => (rest.to_owned(), rest != old),
                         head => (format::branch(head.as_ref()), false),
                     };
                     Row {
@@ -204,6 +206,7 @@ impl Buffer {
                         },
                         text,
                         name,
+                        branch_text: editable.then_some(rest),
                         branch,
                         branch_style: Style::new().fg(if renamed_branch {
                             theme::YELLOW
@@ -228,35 +231,28 @@ impl Buffer {
                         },
                     }
                 }
-                BufferLine::New { text, near } => Row {
-                    repo: self.new_line_repo(text, *near),
-                    mark: Span::raw("+").fg(theme::GREEN),
-                    text,
-                    name: plan::columns(text).0,
-                    branch: plan::columns(text).1.to_owned(),
-                    branch_style: Style::new().fg(theme::GREEN),
-                    hint: Some(new_line_hint(text)),
-                    state: String::new(),
-                    age: Span::raw(""),
-                    source: "",
-                    herdr: Span::raw(""),
-                    style: Style::new().fg(theme::GREEN),
-                    state_style: Style::new(),
-                },
+                BufferLine::New { text, near } => {
+                    let (name, rest) = plan::columns(text);
+                    Row {
+                        // The hint names any other repo, so the line stays where it was typed.
+                        repo: near.map(|id| self.worktrees[id.0].repo.as_path()),
+                        mark: Span::raw("+").fg(theme::GREEN),
+                        text,
+                        name,
+                        branch_text: Some(rest),
+                        branch: rest.to_owned(),
+                        branch_style: Style::new().fg(theme::GREEN),
+                        hint: Some(new_line_hint(text)),
+                        state: String::new(),
+                        age: Span::raw(""),
+                        source: "",
+                        herdr: Span::raw(""),
+                        style: Style::new().fg(theme::GREEN),
+                        state_style: Style::new(),
+                    }
+                }
             })
             .collect()
-    }
-
-    /// The repo a new line goes in: the one it names as `repo:name`, else the one it was
-    /// opened on. A named repo jumar can't pin down gets no group, as its create is blocked.
-    fn new_line_repo(&self, text: &str, near: Option<EntryId>) -> Option<&Path> {
-        match plan::parse_target(text).ok().and_then(|t| t.repo) {
-            Some(name) => match discovery::repos_named(&self.worktrees, &name)[..] {
-                [repo] => Some(repo),
-                _ => None,
-            },
-            None => near.map(|id| self.worktrees[id.0].repo.as_path()),
-        }
     }
 
     fn herdr_marker(&self, worktree: &Worktree) -> Span<'static> {
@@ -376,7 +372,15 @@ impl Buffer {
                 // a split opens, leaves the cursor hidden.
                 let y = cursor_line.and_then(|line| line.checked_sub(scroll));
                 if let (Some(pos), Some(y)) = (cursor_pos, y.filter(|y| *y < height)) {
-                    let x = width(INDENT) + MARK_WIDTH + cursor_x(rows[pos].text, col, widths[0]);
+                    let x = width(INDENT)
+                        + MARK_WIDTH
+                        + cursor_x(
+                            rows[pos].text,
+                            rows[pos].name,
+                            rows[pos].branch_text,
+                            col,
+                            widths[0],
+                        );
                     frame.set_cursor_position((list.x + to_u16(x), list.y + to_u16(y)));
                 }
             }
@@ -544,20 +548,23 @@ fn columns(
     Line::from(spans)
 }
 
-/// Where the cursor at char `col` of `text` sits on screen: within the directory column,
-/// the gap after it, or the branch column, which starts `name_width` plus the gap in.
-fn cursor_x(text: &str, col: usize, name_width: usize) -> usize {
+/// Where the cursor at char `col` of `text` sits on screen: within its directory `name`,
+/// the gap after it, or its `branch`, whose column starts `name_width` plus the gap in.
+/// Both are trimmed parts of `text`; a line without a branch to edit is all directory.
+fn cursor_x(text: &str, name: &str, branch: Option<&str>, col: usize, name_width: usize) -> usize {
     let chars: Vec<char> = text.chars().collect();
-    let run = |from: usize, blank: bool| {
-        from + chars[from..]
-            .iter()
-            .take_while(|c| c.is_whitespace() == blank)
-            .count()
-    };
-    let lead = run(0, true);
-    let dir_end = run(lead, false);
-    let rest = run(dir_end, true);
+    let col_of = |byte: usize| text[..byte].chars().count();
     let span = |from: usize, to: usize| width(&chars[from..to].iter().collect::<String>());
+    let lead = col_of(text.len() - text.trim_start().len());
+    let Some(branch) = branch else {
+        return span(lead.min(col), col.min(chars.len()));
+    };
+    let dir_end = lead + name.chars().count();
+    let rest = if branch.is_empty() {
+        chars.len()
+    } else {
+        col_of(text.trim_end().len() - branch.len())
+    };
     if col <= dir_end {
         span(lead.min(col), col)
     } else if col < rest {
@@ -689,43 +696,28 @@ mod tests {
     }
 
     #[test]
-    fn new_line_repo_should_prefer_the_repo_the_line_names() {
-        let app = buffer().worktrees[0].clone();
-        let mut web = app.clone();
-        web.repo = PathBuf::from("/nonexistent/web");
-        let scan = Scan {
-            worktrees: vec![app, web],
-            warnings: Vec::new(),
-        };
-        let buffer = Buffer::new(scan, &[]);
-        let near = Some(EntryId(0));
-
-        let repos = [
-            buffer.new_line_repo("web:fix@main", near),
-            buffer.new_line_repo("fix", near),
-            buffer.new_line_repo("nope:fix", near),
-        ];
-
-        assert_eq!(
-            repos,
-            [
-                Some(Path::new("/nonexistent/web")),
-                Some(Path::new("/nonexistent/app")),
-                None
-            ]
-        );
-    }
-
-    #[test]
     fn cursor_x_should_follow_the_text_into_the_branch_column() {
-        let xs = [0, 3, 4, 10].map(|col| cursor_x("tui feat/x", col, 5));
+        let xs = [0, 3, 4, 10].map(|col| cursor_x("tui feat/x", "tui", Some("feat/x"), col, 5));
 
         assert_eq!(xs, [0, 3, 8, 14]);
     }
 
     #[test]
     fn cursor_x_should_jump_to_the_branch_column_after_a_typed_space() {
-        assert_eq!(cursor_x("tui ", 4, 5), 8);
+        assert_eq!(cursor_x("tui ", "tui", Some(""), 4, 5), 8);
+    }
+
+    #[test]
+    fn cursor_x_should_put_a_spaced_directory_before_the_last_word() {
+        let text = "my dir feat";
+        let xs = [5, 7].map(|col| cursor_x(text, "my dir", Some("feat"), col, 6));
+
+        assert_eq!(xs, [5, 9]);
+    }
+
+    #[test]
+    fn cursor_x_should_keep_a_line_without_a_branch_in_its_directory() {
+        assert_eq!(cursor_x("my dir ", "my dir", None, 7, 6), 7);
     }
 
     #[test]

@@ -134,7 +134,8 @@ either word:
   worktree too.
 - Edit both to do both.
 
-A checkout without a branch, such as a detached one, has only its directory to edit.
+The branch is the last word, so a directory name can contain spaces. A checkout without a
+branch, such as a detached one, has only its directory to edit.
 
 Before it moves anything, jumar blocks a new branch name that git does not allow, that already
 exists, or that clashes with a branch it would nest under or over: `jb/fix` cannot exist next
@@ -159,13 +160,13 @@ what it will create, or why it can't:
 | `#123` | pull request 123, as branch `pr-123` |
 | `review@#123` | pull request 123, as branch `review` |
 
-- `app/fix` is the branch `app/fix`. If you have a repo named `app`, jumar asks you to write
-  `app:fix` or a different name.
+- `app/fix` is always the branch `app/fix`, even if you have a repo named `app`.
 - jumar blocks a start that is not a branch, tag or commit before it changes anything. A
   remote branch that is not fetched yet, such as `origin/new`, is allowed when
   `fetch_on_create` is on. If its fetch fails, nothing is created.
-- Two lines cannot use the same directory or the same branch. `jb/fix` and `jb-fix` both want
-  the directory `jb-fix`, so jumar blocks the second.
+- Two lines cannot use the same directory or the same branch, or branches that nest, such as
+  `jb` and `jb/a`. A new line also cannot use a branch that the same save removes or renames;
+  apply that first.
 - If the start is a remote branch, such as `origin/main`, jumar fetches it first. If the fetch
   fails, the worktree starts from the last fetched commit, and the report tells you.
 - A pull request comes from the `upstream` remote if it exists, else from `origin`. jumar

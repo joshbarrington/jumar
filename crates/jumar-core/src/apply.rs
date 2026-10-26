@@ -135,30 +135,56 @@ pub struct Context<'a> {
 #[must_use]
 pub fn prepare(context: &Context, operations: Vec<Operation>) -> Vec<Result<Step, Blocked>> {
     let mut paths = HashSet::new();
-    let mut branches = HashSet::new();
+    // Each step is checked against git as it is now, so it must not depend on a branch
+    // that another line takes, or that an earlier step removes or renames.
+    let mut taken: Vec<(PathBuf, String)> = Vec::new();
+    let mut changed: Vec<(PathBuf, String, &str)> = Vec::new();
     let mut results = Vec::new();
     for operation in operations {
         let resolved = resolve(context, &operation).and_then(|step| {
             // `jb/fix` and `jb-fix` share a directory, which only one line can have.
             let (path, branch) = claims(&step);
-            let branch = branch.map(|(repo, b)| (repo.to_path_buf(), b.to_owned()));
             if let Some(path) = path
                 && paths.contains(path)
             {
                 return Err(format!("another line also uses {}", path.display()));
             }
-            if let Some(branch) = &branch
-                && branches.contains(branch)
-            {
-                return Err(format!("another line also uses branch `{}`", branch.1));
+            if let Some((repo, branch)) = branch {
+                let clashes = |r: &Path, b: &str| r == repo && git::branches_clash(b, branch);
+                if let Some((_, other)) = taken.iter().find(|(r, b)| clashes(r, b)) {
+                    return Err(if other == branch {
+                        format!("another line also uses branch `{branch}`")
+                    } else {
+                        format!("another line's branch `{other}` stops git from making `{branch}`")
+                    });
+                }
+                if let Some((_, other, what)) = changed.iter().find(|(r, b, _)| clashes(r, b)) {
+                    return Err(format!(
+                        "this save also {what} branch `{other}`; apply that first"
+                    ));
+                }
+                taken.push((repo.to_path_buf(), branch.to_owned()));
             }
             paths.extend(path.map(Path::to_path_buf));
-            branches.extend(branch);
+            changed.extend(frees(&step));
             Ok(step)
         });
         results.push(resolved.map_err(|reason| Blocked { operation, reason }));
     }
     results
+}
+
+/// The branch a step takes away from where it is now, and how.
+fn frees(step: &Step) -> Option<(PathBuf, String, &'static str)> {
+    let (worktree, what) = match step {
+        Step::Remove(remove) => (&remove.worktree, "removes the worktree of"),
+        Step::Move(step) if step.rename_branch.is_some() => (&step.worktree, "renames"),
+        _ => return None,
+    };
+    match &worktree.head {
+        Some(Head::Branch(branch)) => Some((worktree.repo.clone(), branch.clone(), what)),
+        _ => None,
+    }
 }
 
 /// The directory and the repo's branch a step takes for itself.
@@ -276,15 +302,6 @@ fn remove(context: &Context, id: EntryId) -> Result<Step, String> {
 
 fn create(context: &Context, target: &Target, near: Option<EntryId>) -> Result<Create, String> {
     let name = target.name.as_str();
-    // `app/fix` meant repo `app` before `:` took over.
-    if target.repo.is_none()
-        && let Some((prefix, rest)) = name.split_once('/')
-        && !discovery::repos_named(context.worktrees, prefix).is_empty()
-    {
-        return Err(format!(
-            "`{prefix}` is a repo; write `{prefix}:{rest}` to create there"
-        ));
-    }
     let repo = match &target.repo {
         Some(repo_name) => find_repo(context.worktrees, repo_name)?,
         None => near

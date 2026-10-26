@@ -123,17 +123,24 @@ pub fn remote_branch(repo: &Path, remotes: &[String], name: &str) -> Result<Opti
 ///
 /// Fails when git fails.
 pub fn clashing_branch(repo: &Path, name: &str, except: Option<&str>) -> Result<Option<String>> {
+    Ok(refs_under(repo, "refs/heads/")?
+        .into_iter()
+        .filter(|branch| Some(branch.as_str()) != except)
+        .filter(|branch| branches_clash(branch, name))
+        // The name itself first, so an existing branch reads as one.
+        .max_by_key(|branch| branch == name))
+}
+
+/// Whether branches `a` and `b` cannot both exist: they are the same, or one would nest
+/// under the other, as `jb` and `jb/a` do.
+#[must_use]
+pub fn branches_clash(a: &str, b: &str) -> bool {
     let nested = |outer: &str, inner: &str| {
         inner
             .strip_prefix(outer)
             .is_some_and(|rest| rest.starts_with('/'))
     };
-    Ok(refs_under(repo, "refs/heads/")?
-        .into_iter()
-        .filter(|branch| Some(branch.as_str()) != except)
-        .filter(|branch| branch == name || nested(branch, name) || nested(name, branch))
-        // The name itself first, so an existing branch reads as one.
-        .max_by_key(|branch| branch == name))
+    a == b || nested(a, b) || nested(b, a)
 }
 
 /// The refs under `prefix`, like `refs/heads/`, named relative to it.
