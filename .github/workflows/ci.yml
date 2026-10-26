@@ -23,7 +23,7 @@ jobs:
         os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # rust-toolchain.toml pins the version; rustup installs it on first cargo call.
       - run: rustup show active-toolchain
       - uses: Swatinem/rust-cache@v2
