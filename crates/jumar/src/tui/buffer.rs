@@ -344,7 +344,8 @@ impl Buffer {
             } else {
                 "no worktrees match the filter"
             };
-            frame.render_widget(Paragraph::new(empty).fg(theme::GRAY), list);
+            let text = vec![Line::default(), Line::from(empty)];
+            frame.render_widget(Paragraph::new(text).fg(theme::GRAY), list);
         } else {
             frame.render_widget(Paragraph::new(lines), list);
         }
