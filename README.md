@@ -14,8 +14,6 @@ changes and apply them.
 - It runs in a terminal, as a [herdr](https://herdr.dev) plugin, or as a picker for coding
   agents.
 
-A jumar is a rope ascender: a clamp that slides up a rope and grips when you stop.
-
 ## Install
 
 ```sh
