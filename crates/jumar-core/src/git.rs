@@ -85,14 +85,20 @@ pub fn branch_exists(repo: &Path, name: &str) -> Result<bool> {
     ref_exists(repo, &format!("refs/heads/{name}"))
 }
 
-/// `remote/name` when a remote, `origin` first, has a fetched branch `name`.
+/// # Errors
+///
+/// Fails when git fails.
+pub fn remotes(repo: &Path) -> Result<Vec<String>> {
+    Ok(run(repo, &["remote"])?.lines().map(str::to_owned).collect())
+}
+
+/// `remote/name` when one of `remotes`, `origin` first, has a fetched branch `name`.
 ///
 /// # Errors
 ///
 /// Fails when git fails.
-pub fn remote_branch(repo: &Path, name: &str) -> Result<Option<String>> {
-    let output = run(repo, &["remote"])?;
-    let mut remotes: Vec<&str> = output.lines().collect();
+pub fn remote_branch(repo: &Path, remotes: &[String], name: &str) -> Result<Option<String>> {
+    let mut remotes: Vec<&str> = remotes.iter().map(String::as_str).collect();
     remotes.sort_by_key(|remote| *remote != "origin");
     for remote in remotes {
         if ref_exists(repo, &format!("refs/remotes/{remote}/{name}"))? {

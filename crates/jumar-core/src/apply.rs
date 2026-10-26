@@ -132,10 +132,25 @@ pub struct Context<'a> {
 /// will happen.
 #[must_use]
 pub fn prepare(context: &Context, operations: Vec<Operation>) -> Vec<Result<Step, Blocked>> {
+    let mut claimed = Vec::new();
     operations
         .into_iter()
         .map(|operation| {
-            let resolved = resolve(context, &operation);
+            let resolved = resolve(context, &operation).and_then(|step| {
+                // `jb/fix` and `jb-fix` share a directory, which only one line can have.
+                let path = match &step {
+                    Step::Move(step) => Some(&step.to),
+                    Step::Create(step) => Some(&step.path),
+                    Step::Remove(_) => None,
+                };
+                if let Some(path) = path {
+                    if claimed.contains(path) {
+                        return Err(format!("another line also uses {}", path.display()));
+                    }
+                    claimed.push(path.clone());
+                }
+                Ok(step)
+            });
             resolved.map_err(|reason| Blocked { operation, reason })
         })
         .collect()
@@ -153,9 +168,13 @@ fn resolve(context: &Context, operation: &Operation) -> Result<Step, String> {
             if worktree.locked.is_some() {
                 return Err("it is locked; run `git worktree unlock` to move it".into());
             }
-            let workspace = workspace_for(context, worktree);
+            // Renaming only the branch leaves the directory, and herdr's view of it, alone.
+            let workspace = workspace_for(context, worktree).filter(|_| *to != worktree.path);
             if workspace.is_some_and(|w| w.agents > 0) {
                 return Err("an agent is running in its herdr workspace".into());
+            }
+            if let Some(new) = rename_branch {
+                check_rename(&worktree.repo, new)?;
             }
             Ok(Step::Move(Move {
                 worktree: worktree.clone(),
@@ -168,6 +187,19 @@ fn resolve(context: &Context, operation: &Operation) -> Result<Step, String> {
             create(context, target, base.as_deref(), *near).map(Step::Create)
         }
     }
+}
+
+/// Checked before the directory moves, since a failed `git branch -m` would leave the move
+/// half done.
+fn check_rename(repo: &Path, branch: &str) -> Result<(), String> {
+    let git_err = |err: Error| err.to_string();
+    if !git::is_valid_branch_name(repo, branch).map_err(git_err)? {
+        return Err(format!("`{branch}` is not a valid branch name"));
+    }
+    if git::branch_exists(repo, branch).map_err(git_err)? {
+        return Err(format!("branch `{branch}` already exists"));
+    }
+    Ok(())
 }
 
 fn workspace_for<'a>(context: &Context<'a>, worktree: &Worktree) -> Option<&'a herdr::Workspace> {
@@ -212,6 +244,12 @@ fn create(
     near: Option<EntryId>,
 ) -> Result<Create, String> {
     let (repo_name, name) = split_target(target);
+    if repo_name == Some("") {
+        return Err("write a repo before `:`, or leave out the `:`".into());
+    }
+    if name.is_empty() {
+        return Err("write a name after `:`".into());
+    }
     let (name, pull) = pull_request(name, base)?;
     let name = name.as_str();
     let base = base.filter(|_| pull.is_none());
@@ -243,6 +281,7 @@ fn create(
     if !git::is_valid_branch_name(&repo, name).map_err(git_err)? {
         return Err(format!("`{name}` is not a valid branch name"));
     }
+    let remotes = git::remotes(&repo).map_err(git_err)?;
     let mut fetch = None;
     let start = if git::branch_exists(&repo, name).map_err(git_err)? {
         if base.is_some() || pull.is_some() {
@@ -252,15 +291,15 @@ fn create(
         }
         Start::Existing
     } else if let Some(number) = pull {
-        let pull = pull_fetch(&repo, number)?;
+        let pull = pull_fetch(&repo, &remotes, number)?;
         let start = Start::From(pull.into.clone());
         fetch = Some(pull);
         start
     } else if base.is_none()
-        && let Some(remote) = git::remote_branch(&repo, name).map_err(git_err)?
+        && let Some(remote) = git::remote_branch(&repo, &remotes, name).map_err(git_err)?
     {
         if context.config.fetch_on_create() {
-            fetch = remote_branch(&repo, &remote);
+            fetch = remote_branch(&remotes, &remote);
         }
         Start::Tracking(remote)
     } else {
@@ -270,7 +309,7 @@ fn create(
             None => default_base(context, &repo).map_err(git_err)?,
         };
         if context.config.fetch_on_create() {
-            fetch = remote_branch(&repo, &base);
+            fetch = remote_branch(&remotes, &base);
         }
         // A remote branch not fetched yet only exists once its fetch runs.
         if explicit && fetch.is_none() && !git::is_commit(&repo, &base).map_err(git_err)? {
@@ -315,11 +354,10 @@ fn pull_request(name: &str, base: Option<&str>) -> Result<(String, Option<u32>),
 }
 
 /// PR `number`'s head from `upstream`, where a fork's PRs live, or else `origin`.
-fn pull_fetch(repo: &Path, number: u32) -> Result<Fetch, String> {
-    let remotes = git::run(repo, &["remote"]).map_err(|e| e.to_string())?;
+fn pull_fetch(repo: &Path, remotes: &[String], number: u32) -> Result<Fetch, String> {
     let remote = ["upstream", "origin"]
         .into_iter()
-        .find(|name| remotes.lines().any(|r| r == *name))
+        .find(|name| remotes.iter().any(|r| r == name))
         .ok_or("no upstream or origin remote to fetch the PR from")?;
     let url = git::run(repo, &["remote", "get-url", remote]).unwrap_or_default();
     let from = if url.contains("gitlab") {
@@ -336,11 +374,10 @@ fn pull_fetch(repo: &Path, number: u32) -> Result<Fetch, String> {
 }
 
 /// `base` as a branch of one of the repo's remotes, like `origin/main`.
-fn remote_branch(repo: &Path, base: &str) -> Option<Fetch> {
+fn remote_branch(remotes: &[String], base: &str) -> Option<Fetch> {
     let base = base.strip_prefix("refs/remotes/").unwrap_or(base);
-    let remotes = git::run(repo, &["remote"]).ok()?;
     remotes
-        .lines()
+        .iter()
         .filter_map(|remote| {
             let branch = base.strip_prefix(remote)?.strip_prefix('/')?;
             Some(Fetch {
@@ -507,8 +544,10 @@ fn execute_move(step: &Move, herdr: &Herdr) -> Result<()> {
     if let Some(workspace) = &step.workspace {
         herdr.close_workspace(workspace)?;
     }
-    let args = ["worktree", "move", utf8(&worktree.path)?, utf8(&step.to)?];
-    git::run(&worktree.repo, &args)?;
+    if step.to != worktree.path {
+        let args = ["worktree", "move", utf8(&worktree.path)?, utf8(&step.to)?];
+        git::run(&worktree.repo, &args)?;
+    }
     if let (Some(new), Some(Head::Branch(old))) = (&step.rename_branch, &worktree.head) {
         git::run(&worktree.repo, &["branch", "-m", old, new])?;
     }
@@ -529,9 +568,15 @@ fn execute_create(create: &Create, herdr: &Herdr, notes: &mut Vec<String>) -> Re
                 source: Box::new(err),
             });
         }
+        let start = git::short_ref(&fetch.into).to_owned();
+        if !git::is_commit(&create.repo, &fetch.into)? {
+            return Err(Error::StartFetch {
+                start,
+                source: Box::new(err),
+            });
+        }
         notes.push(format!(
-            "could not fetch {}, so it starts from the last fetched commit: {err}",
-            git::short_ref(&fetch.into)
+            "could not fetch {start}, so it starts from the last fetched commit: {err}"
         ));
     }
     let path = utf8(&create.path)?;

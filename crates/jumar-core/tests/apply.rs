@@ -75,6 +75,10 @@ impl Fixture {
     }
 
     fn prepare(&self, operation: Operation) -> Result<Step, Blocked> {
+        self.prepare_all(vec![operation]).remove(0)
+    }
+
+    fn prepare_all(&self, operations: Vec<Operation>) -> Vec<Result<Step, Blocked>> {
         let context = Context {
             worktrees: &self.worktrees,
             tiers: &[],
@@ -84,7 +88,7 @@ impl Fixture {
             config: &self.config,
             herdr: self.herdr.as_ref(),
         };
-        apply::prepare(&context, vec![operation]).remove(0)
+        apply::prepare(&context, operations)
     }
 
     fn remove(&self, index: usize) -> apply::Remove {
@@ -255,6 +259,80 @@ fn execute_remove_should_prune_worktree_whose_directory_is_gone() {
     assert_eq!(listed.len(), 2);
 }
 
+fn rename(fx: &Fixture, dir: &str, branch: &str) -> Result<Step, Blocked> {
+    fx.prepare(Operation::Move {
+        id: EntryId(0),
+        to: fx.repo().join(".claude/worktrees").join(dir),
+        rename_branch: Some(branch.into()),
+    })
+}
+
+#[test]
+fn prepare_move_should_block_an_invalid_new_branch_name() {
+    let blocked = rename(&Fixture::new(), "feat-", "feat/").unwrap_err();
+
+    assert_eq!(blocked.reason, "`feat/` is not a valid branch name");
+}
+
+#[test]
+fn prepare_move_should_block_renaming_onto_an_existing_branch() {
+    let fx = Fixture::new();
+    git(&fx.repo(), &["branch", "old"]);
+
+    let blocked = rename(&fx, "old", "old").unwrap_err();
+
+    assert_eq!(blocked.reason, "branch `old` already exists");
+}
+
+#[test]
+fn execute_move_should_rename_only_the_branch_when_the_directory_stays() {
+    let fx = Fixture::new();
+    let step = rename(&fx, "feat", "jb/feat").unwrap();
+
+    apply::execute(&step, &Herdr::new()).unwrap();
+
+    let path = &fx.worktrees[0].path;
+    let branch = git::run(path, &["branch", "--show-current"]).unwrap();
+    assert_eq!(branch.trim(), "jb/feat");
+}
+
+#[test]
+fn prepare_should_block_a_second_line_using_the_same_directory() {
+    let fx = Fixture::new();
+    let create = |target: &str| Operation::Create {
+        target: target.into(),
+        base: None,
+        near: Some(EntryId(0)),
+    };
+
+    let results = fx.prepare_all(vec![create("jb/fix"), create("jb-fix")]);
+
+    let reason = &results[1].as_ref().unwrap_err().reason;
+    assert!(reason.starts_with("another line also uses"), "{reason}");
+}
+
+#[test]
+fn prepare_should_block_a_create_into_a_moved_worktree_directory() {
+    let fx = Fixture::new();
+    let to = fx.repo().join(".claude/worktrees/jb-fix");
+    let operations = vec![
+        Operation::Move {
+            id: EntryId(0),
+            to,
+            rename_branch: None,
+        },
+        Operation::Create {
+            target: "jb/fix".into(),
+            base: None,
+            near: Some(EntryId(0)),
+        },
+    ];
+
+    let results = fx.prepare_all(operations);
+
+    assert!(results[1].is_err());
+}
+
 #[test]
 fn execute_move_should_rename_directory_and_branch() {
     let fx = Fixture::new();
@@ -348,6 +426,23 @@ fn execute_create_should_check_out_an_existing_slashed_branch() {
 
     let branch = git::run(&path, &["branch", "--show-current"]).unwrap();
     assert_eq!(branch.trim(), "alice/spike");
+}
+
+#[test]
+fn prepare_create_should_block_an_empty_repo_before_the_colon() {
+    let blocked = Fixture::new().create(":fix", None).unwrap_err();
+
+    assert_eq!(
+        blocked.reason,
+        "write a repo before `:`, or leave out the `:`"
+    );
+}
+
+#[test]
+fn prepare_create_should_block_an_empty_name_after_the_colon() {
+    let blocked = Fixture::new().create("app:", None).unwrap_err();
+
+    assert_eq!(blocked.reason, "write a name after `:`");
 }
 
 #[test]
@@ -618,6 +713,32 @@ fn prepare_create_should_block_an_unknown_base() {
     let blocked = Fixture::new().create("fix", Some("nope")).unwrap_err();
 
     assert_eq!(blocked.reason, "`nope` is not a branch, tag or commit");
+}
+
+#[test]
+fn execute_create_should_fail_cleanly_when_an_unfetched_start_cannot_be_fetched() {
+    let fx = Fixture::new();
+    fx.add_remote_ahead();
+    let create = fx.create("fix", Some("origin/mian")).unwrap();
+    let path = create.path.clone();
+
+    let err = apply::execute(&Step::Create(create), &Herdr::new()).unwrap_err();
+
+    assert!(
+        err.to_string()
+            .starts_with("could not fetch origin/mian, and it was never fetched before"),
+        "{err}"
+    );
+    assert!(!path.exists());
+}
+
+#[test]
+fn prepare_create_should_block_an_unfetched_remote_base_when_fetching_is_off() {
+    let mut fx = Fixture::new();
+    fx.add_remote_ahead();
+    fx.config = Config::from_toml("fetch_on_create = false\n", Path::new("config.toml")).unwrap();
+
+    assert!(fx.create("fix", Some("origin/later")).is_err());
 }
 
 #[test]

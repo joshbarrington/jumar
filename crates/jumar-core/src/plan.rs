@@ -90,7 +90,12 @@ pub fn plan(original: &[Worktree], lines: &[Line]) -> Result<Vec<Operation>, Vec
                     continue;
                 }
                 let name = name.trim();
-                if Some(dir_name_for(name).as_str()) == dir_name(&worktree.path) {
+                let dir = dir_name(&worktree.path);
+                // `jb-a` to `jb/a` keeps the directory but can still rename the branch.
+                if Some(name) == dir
+                    || (Some(dir_name_for(name).as_str()) == dir
+                        && renamed_branch(worktree, name).is_none())
+                {
                     continue;
                 }
                 if !is_valid_dir_name(&dir_name_for(name)) {
@@ -138,20 +143,14 @@ pub fn plan(original: &[Worktree], lines: &[Line]) -> Result<Vec<Operation>, Vec
         .collect();
     for (line, id, worktree, name) in moves {
         let to = worktree.path.with_file_name(dir_name_for(name));
-        if !taken.insert(to.clone()) {
+        if to != worktree.path && !taken.insert(to.clone()) {
             errors.push(PlanError::Collision { line, path: to });
             continue;
         }
-        let matched =
-            |branch: &str| Some(dir_name_for(branch).as_str()) == dir_name(&worktree.path);
-        let rename_branch = match &worktree.head {
-            Some(Head::Branch(branch)) if matched(branch) => Some(name.to_owned()),
-            _ => None,
-        };
         operations.push(Operation::Move {
             id,
             to,
-            rename_branch,
+            rename_branch: renamed_branch(worktree, name),
         });
     }
     operations.extend(creates);
@@ -186,6 +185,19 @@ fn existing_id(original: &[Worktree], line: &Line) -> Option<EntryId> {
     }
 }
 
+/// `name` when the branch is named after the directory, so renaming one renames both.
+fn renamed_branch(worktree: &Worktree, name: &str) -> Option<String> {
+    match &worktree.head {
+        Some(Head::Branch(branch))
+            if branch != name
+                && Some(dir_name_for(branch).as_str()) == dir_name(&worktree.path) =>
+        {
+            Some(name.to_owned())
+        }
+        _ => None,
+    }
+}
+
 fn dir_name(path: &Path) -> Option<&str> {
     path.file_name()?.to_str()
 }
@@ -198,7 +210,7 @@ pub fn dir_name_for(name: &str) -> String {
 }
 
 fn is_valid_dir_name(name: &str) -> bool {
-    !name.is_empty() && name != "." && name != ".." && !name.contains(['/', '\0'])
+    !name.is_empty() && name != "." && name != ".." && !name.contains('\0')
 }
 
 #[cfg(test)]
@@ -451,6 +463,27 @@ mod tests {
             &ops[0],
             Operation::Move { rename_branch: Some(b), .. } if b == "jb/a2"
         ));
+    }
+
+    #[test]
+    fn plan_should_rename_only_the_branch_when_the_directory_stays() {
+        let original = vec![worktree("/w/jb-a", "jb-a")];
+
+        let ops = plan(&original, &[keep(0, "jb/a")]).unwrap();
+
+        let expected = Operation::Move {
+            id: EntryId(0),
+            to: PathBuf::from("/w/jb-a"),
+            rename_branch: Some("jb/a".into()),
+        };
+        assert_eq!(ops, [expected]);
+    }
+
+    #[test]
+    fn plan_should_leave_an_untouched_line_whose_branch_has_a_slash() {
+        let original = vec![worktree("/w/jb-a", "jb/a")];
+
+        assert_eq!(plan(&original, &[keep(0, "jb-a")]), Ok(vec![]));
     }
 
     #[test]

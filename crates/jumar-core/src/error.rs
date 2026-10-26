@@ -46,6 +46,12 @@ pub enum Error {
         #[source]
         source: Box<Error>,
     },
+    #[error("could not fetch {start}, and it was never fetched before: {source}")]
+    StartFetch {
+        start: String,
+        #[source]
+        source: Box<Error>,
+    },
     #[error("could not copy {}: {source}", path.display())]
     Copy {
         path: PathBuf,
