@@ -6,11 +6,12 @@ use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use jumar_core::config::Tool;
+use jumar_core::discovery;
 use jumar_core::editor::{Editor, Entry, Mode};
 use jumar_core::herdr::{self, AgentStatus, Herdr};
 use jumar_core::inspect::inspect_all;
 use jumar_core::model::{Health, Worktree};
-use jumar_core::plan::{EntryId, Line as BufferLine};
+use jumar_core::plan::{self, EntryId, Line as BufferLine};
 use jumar_core::safety::Tier;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout};
@@ -229,17 +230,13 @@ impl Buffer {
     /// The repo a new line goes in: the one it names as `repo:name`, else the one it was
     /// opened on. A named repo jumar can't pin down gets no group, as its create is blocked.
     fn new_line_repo(&self, text: &str, near: Option<EntryId>) -> Option<&Path> {
-        let target = text.split('@').next().unwrap_or_default();
-        let Some((name, _)) = target.split_once(':') else {
-            return near.map(|id| self.worktrees[id.0].repo.as_path());
-        };
-        let mut repos = self
-            .worktrees
-            .iter()
-            .map(|w| w.repo.as_path())
-            .filter(|repo| repo.file_name().is_some_and(|n| n == name.trim()));
-        let first = repos.next()?;
-        repos.all(|repo| repo == first).then_some(first)
+        match plan::parse_target(text, 0).ok().and_then(|t| t.repo) {
+            Some(name) => match discovery::repos_named(&self.worktrees, &name)[..] {
+                [repo] => Some(repo),
+                _ => None,
+            },
+            None => near.map(|id| self.worktrees[id.0].repo.as_path()),
+        }
     }
 
     fn herdr_marker(&self, worktree: &Worktree) -> Span<'static> {

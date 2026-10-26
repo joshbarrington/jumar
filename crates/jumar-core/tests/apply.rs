@@ -11,7 +11,7 @@ use jumar_core::config::Config;
 use jumar_core::git;
 use jumar_core::herdr::{self, Herdr};
 use jumar_core::model::{Head, Health, Worktree};
-use jumar_core::plan::{EntryId, Operation};
+use jumar_core::plan::{self, EntryId, Operation};
 use jumar_core::safety::Tier;
 use tempfile::TempDir;
 
@@ -23,6 +23,14 @@ struct Fixture {
     worktrees: Vec<Worktree>,
     herdr: Option<herdr::State>,
     config: Config,
+}
+
+/// A create for line `text`, opened on worktree 0.
+fn create_op(text: &str) -> Operation {
+    Operation::Create {
+        target: plan::parse_target(text, 1).unwrap(),
+        near: Some(EntryId(0)),
+    }
 }
 
 impl Fixture {
@@ -102,15 +110,24 @@ impl Fixture {
     }
 
     fn create(&self, target: &str, base: Option<&str>) -> Result<apply::Create, Blocked> {
-        self.prepare(Operation::Create {
-            target: target.into(),
-            base: base.map(Into::into),
-            near: Some(EntryId(0)),
-        })
-        .map(|step| match step {
+        let text = match base {
+            Some(base) => format!("{target}@{base}"),
+            None => target.to_owned(),
+        };
+        self.prepare(create_op(&text)).map(|step| match step {
             Step::Create(create) => create,
             step => panic!("expected a create, got {step:?}"),
         })
+    }
+
+    /// Pushes `main` to `origin` as `branch` and fetches it, so `branch` is only remote.
+    fn with_remote_branch(&self, branch: &str) {
+        self.add_remote_ahead();
+        git(
+            &self.repo(),
+            &["push", "-q", "origin", &format!("main:{branch}")],
+        );
+        git(&self.repo(), &["fetch", "-q", "origin"]);
     }
 
     /// Marks worktree `index` as open in a herdr workspace with `agents` agents.
@@ -349,11 +366,7 @@ fn prepare_should_block_a_second_line_using_the_same_branch() {
             to: None,
             rename_branch: Some("foo".into()),
         },
-        Operation::Create {
-            target: "foo".into(),
-            base: None,
-            near: Some(EntryId(0)),
-        },
+        create_op("foo"),
     ];
 
     let results = fx.prepare_all(operations);
@@ -383,13 +396,7 @@ fn prepare_move_should_rename_the_branch_of_a_locked_worktree() {
 #[test]
 fn prepare_should_block_a_second_line_using_the_same_directory() {
     let fx = Fixture::new();
-    let create = |target: &str| Operation::Create {
-        target: target.into(),
-        base: None,
-        near: Some(EntryId(0)),
-    };
-
-    let results = fx.prepare_all(vec![create("jb/fix"), create("jb-fix")]);
+    let results = fx.prepare_all(vec![create_op("jb/fix"), create_op("jb-fix")]);
 
     let reason = &results[1].as_ref().unwrap_err().reason;
     assert!(reason.starts_with("another line also uses"), "{reason}");
@@ -405,11 +412,7 @@ fn prepare_should_block_a_create_into_a_moved_worktree_directory() {
             to: Some(to),
             rename_branch: None,
         },
-        Operation::Create {
-            target: "jb/fix".into(),
-            base: None,
-            near: Some(EntryId(0)),
-        },
+        create_op("jb/fix"),
     ];
 
     let results = fx.prepare_all(operations);
@@ -510,23 +513,6 @@ fn execute_create_should_check_out_an_existing_slashed_branch() {
 
     let branch = git::run(&path, &["branch", "--show-current"]).unwrap();
     assert_eq!(branch.trim(), "alice/spike");
-}
-
-#[test]
-fn prepare_create_should_block_an_empty_repo_before_the_colon() {
-    let blocked = Fixture::new().create(":fix", None).unwrap_err();
-
-    assert_eq!(
-        blocked.reason,
-        "write a repo before `:`, or leave out the `:`"
-    );
-}
-
-#[test]
-fn prepare_create_should_block_an_empty_name_after_the_colon() {
-    let blocked = Fixture::new().create("app:", None).unwrap_err();
-
-    assert_eq!(blocked.reason, "write a name after `:`");
 }
 
 #[test]
@@ -771,9 +757,7 @@ fn execute_create_should_note_a_failed_fetch_and_still_create() {
 #[test]
 fn prepare_create_should_track_a_branch_only_on_the_remote() {
     let fx = Fixture::new();
-    fx.add_remote_ahead();
-    git(&fx.repo(), &["push", "-q", "origin", "main:fix"]);
-    git(&fx.repo(), &["fetch", "-q", "origin"]);
+    fx.with_remote_branch("fix");
 
     let create = fx.create("fix", None).unwrap();
 
@@ -784,9 +768,7 @@ fn prepare_create_should_track_a_branch_only_on_the_remote() {
 #[test]
 fn execute_create_should_set_the_remote_branch_as_upstream() {
     let fx = Fixture::new();
-    fx.add_remote_ahead();
-    git(&fx.repo(), &["push", "-q", "origin", "main:fix"]);
-    git(&fx.repo(), &["fetch", "-q", "origin"]);
+    fx.with_remote_branch("fix");
     let create = fx.create("fix", None).unwrap();
     let path = create.path.clone();
 
@@ -799,9 +781,7 @@ fn execute_create_should_set_the_remote_branch_as_upstream() {
 #[test]
 fn prepare_create_should_branch_from_a_given_base_over_the_remote_branch() {
     let fx = Fixture::new();
-    fx.add_remote_ahead();
-    git(&fx.repo(), &["push", "-q", "origin", "main:fix"]);
-    git(&fx.repo(), &["fetch", "-q", "origin"]);
+    fx.with_remote_branch("fix");
 
     let create = fx.create("fix", Some("wip")).unwrap();
 
@@ -916,20 +896,6 @@ fn prepare_create_should_use_merge_requests_on_gitlab() {
     let create = fx.create("#7", None).unwrap();
 
     assert_eq!(create.fetch.unwrap().from, "refs/merge-requests/7/head");
-}
-
-#[test]
-fn prepare_create_should_block_a_bad_pr_number() {
-    let fx = Fixture::new();
-    fx.add_pull("origin", "gh", "pull", 7);
-
-    let blocked = fx.create("#seven", None).unwrap_err();
-
-    assert!(
-        blocked.reason.contains("not a PR number"),
-        "{}",
-        blocked.reason
-    );
 }
 
 #[test]

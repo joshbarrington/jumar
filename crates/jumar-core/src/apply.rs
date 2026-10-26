@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Output, Stdio};
@@ -10,7 +11,7 @@ use crate::git;
 use crate::herdr::{self, Herdr};
 use crate::inspect;
 use crate::model::{Head, Health, Worktree};
-use crate::plan::{self, EntryId, Operation};
+use crate::plan::{self, EntryId, Operation, Target};
 use crate::safety::Tier;
 use crate::{Error, Result};
 
@@ -133,43 +134,48 @@ pub struct Context<'a> {
 /// will happen.
 #[must_use]
 pub fn prepare(context: &Context, operations: Vec<Operation>) -> Vec<Result<Step, Blocked>> {
-    let mut paths = Vec::new();
-    let mut branches = Vec::new();
-    operations
-        .into_iter()
-        .map(|operation| {
-            let resolved = resolve(context, &operation).and_then(|step| {
-                // `jb/fix` and `jb-fix` share a directory, which only one line can have.
-                let (path, branch) = match &step {
-                    Step::Move(step) => (
-                        step.to.clone(),
-                        step.rename_branch
-                            .clone()
-                            .map(|b| (step.worktree.repo.clone(), b)),
-                    ),
-                    Step::Create(step) => (
-                        Some(step.path.clone()),
-                        Some((step.repo.clone(), step.branch.clone())),
-                    ),
-                    Step::Remove(_) => (None, None),
-                };
-                if let Some(path) = &path
-                    && paths.contains(path)
-                {
-                    return Err(format!("another line also uses {}", path.display()));
-                }
-                if let Some(branch) = &branch
-                    && branches.contains(branch)
-                {
-                    return Err(format!("another line also uses branch `{}`", branch.1));
-                }
-                paths.extend(path);
-                branches.extend(branch);
-                Ok(step)
-            });
-            resolved.map_err(|reason| Blocked { operation, reason })
-        })
-        .collect()
+    let mut paths = HashSet::new();
+    let mut branches = HashSet::new();
+    let mut results = Vec::new();
+    for operation in operations {
+        let resolved = resolve(context, &operation).and_then(|step| {
+            // `jb/fix` and `jb-fix` share a directory, which only one line can have.
+            let (path, branch) = claims(&step);
+            let branch = branch.map(|(repo, b)| (repo.to_path_buf(), b.to_owned()));
+            if let Some(path) = path
+                && paths.contains(path)
+            {
+                return Err(format!("another line also uses {}", path.display()));
+            }
+            if let Some(branch) = &branch
+                && branches.contains(branch)
+            {
+                return Err(format!("another line also uses branch `{}`", branch.1));
+            }
+            paths.extend(path.map(Path::to_path_buf));
+            branches.extend(branch);
+            Ok(step)
+        });
+        results.push(resolved.map_err(|reason| Blocked { operation, reason }));
+    }
+    results
+}
+
+/// The directory and the repo's branch a step takes for itself.
+fn claims(step: &Step) -> (Option<&Path>, Option<(&Path, &str)>) {
+    match step {
+        Step::Move(step) => (
+            step.to.as_deref(),
+            step.rename_branch
+                .as_deref()
+                .map(|b| (step.worktree.repo.as_path(), b)),
+        ),
+        Step::Create(step) => (
+            Some(&step.path),
+            Some((step.repo.as_path(), step.branch.as_str())),
+        ),
+        Step::Remove(_) => (None, None),
+    }
 }
 
 fn resolve(context: &Context, operation: &Operation) -> Result<Step, String> {
@@ -191,7 +197,7 @@ fn resolve(context: &Context, operation: &Operation) -> Result<Step, String> {
                 return Err("an agent is running in its herdr workspace".into());
             }
             if let (Some(new), Some(Head::Branch(old))) = (rename_branch, &worktree.head) {
-                check_new_branch(&worktree.repo, new, Some(old))?;
+                check_new_branch(&worktree.repo, new, old)?;
             }
             Ok(Step::Move(Move {
                 worktree: worktree.clone(),
@@ -201,24 +207,36 @@ fn resolve(context: &Context, operation: &Operation) -> Result<Step, String> {
                 workspace: workspace.filter(|_| to.is_some()).map(|w| w.id.clone()),
             }))
         }
-        Operation::Create { target, base, near } => {
-            create(context, target, base.as_deref(), *near).map(Step::Create)
-        }
+        Operation::Create { target, near } => create(context, target, *near).map(Step::Create),
     }
 }
 
 /// Checked before anything runs, since a failed `git branch -m` would leave a move half
 /// done. `old` is the branch being renamed, which git lets the new name replace.
-fn check_new_branch(repo: &Path, branch: &str, old: Option<&str>) -> Result<(), String> {
-    let git_err = |err: Error| err.to_string();
-    if !git::is_valid_branch_name(repo, branch).map_err(git_err)? {
-        return Err(format!("`{branch}` is not a valid branch name"));
-    }
-    match git::clashing_branch(repo, branch, old).map_err(git_err)? {
+fn check_new_branch(repo: &Path, branch: &str, old: &str) -> Result<(), String> {
+    check_branch_name(repo, branch)?;
+    match git::clashing_branch(repo, branch, Some(old)).map_err(git_err)? {
         Some(clash) if clash == branch => Err(format!("branch `{branch}` already exists")),
-        Some(clash) => Err(format!("branch `{clash}` stops git from making `{branch}`")),
+        Some(clash) => Err(clash_reason(&clash, branch)),
         None => Ok(()),
     }
+}
+
+fn check_branch_name(repo: &Path, branch: &str) -> Result<(), String> {
+    if git::is_valid_branch_name(repo, branch).map_err(git_err)? {
+        Ok(())
+    } else {
+        Err(format!("`{branch}` is not a valid branch name"))
+    }
+}
+
+fn clash_reason(clash: &str, branch: &str) -> String {
+    format!("branch `{clash}` stops git from making `{branch}`")
+}
+
+#[expect(clippy::needless_pass_by_value, reason = "fits `map_err` directly")]
+fn git_err(err: Error) -> String {
+    err.to_string()
 }
 
 fn workspace_for<'a>(context: &Context<'a>, worktree: &Worktree) -> Option<&'a herdr::Workspace> {
@@ -232,7 +250,7 @@ fn remove(context: &Context, id: EntryId) -> Result<Step, String> {
     }
     let tier = match context.tiers.get(id.0).copied().flatten() {
         Some(tier) => tier,
-        None => inspect::inspect(worktree).map_err(|e| e.to_string())?.tier,
+        None => inspect::inspect(worktree).map_err(git_err)?.tier,
     };
     let changes = if tier == Tier::Dirty {
         git::run(&worktree.path, &["status", "--short"])
@@ -256,34 +274,18 @@ fn remove(context: &Context, id: EntryId) -> Result<Step, String> {
     }))
 }
 
-fn create(
-    context: &Context,
-    target: &str,
-    base: Option<&str>,
-    near: Option<EntryId>,
-) -> Result<Create, String> {
-    let (repo_name, name) = split_target(target);
-    if repo_name == Some("") {
-        return Err("write a repo before `:`, or leave out the `:`".into());
-    }
-    if name.is_empty() {
-        return Err("write a name after `:`".into());
-    }
-    let (name, pull) = pull_request(name, base)?;
-    let name = name.as_str();
-    let base = base.filter(|_| pull.is_none());
+fn create(context: &Context, target: &Target, near: Option<EntryId>) -> Result<Create, String> {
+    let name = target.name.as_str();
     // `app/fix` meant repo `app` before `:` took over.
-    if repo_name.is_none()
+    if target.repo.is_none()
         && let Some((prefix, rest)) = name.split_once('/')
-        && discovery::repos(context.worktrees)
-            .iter()
-            .any(|repo| repo.file_name().is_some_and(|n| n == prefix))
+        && !discovery::repos_named(context.worktrees, prefix).is_empty()
     {
         return Err(format!(
             "`{prefix}` is a repo; write `{prefix}:{rest}` to create there"
         ));
     }
-    let repo = match repo_name {
+    let repo = match &target.repo {
         Some(repo_name) => find_repo(context.worktrees, repo_name)?,
         None => near
             .map(|id| context.worktrees[id.0].repo.clone())
@@ -298,49 +300,52 @@ fn create(
     if path.exists() {
         return Err(format!("{} already exists", path.display()));
     }
-    let git_err = |err: Error| err.to_string();
-    if !git::is_valid_branch_name(&repo, name).map_err(git_err)? {
-        return Err(format!("`{name}` is not a valid branch name"));
-    }
-    let remotes = git::remotes(&repo).map_err(git_err)?;
+    check_branch_name(&repo, name)?;
+    let exists = match git::clashing_branch(&repo, name, None).map_err(git_err)? {
+        Some(clash) if clash == name => true,
+        Some(clash) => return Err(clash_reason(&clash, name)),
+        None => false,
+    };
+    let base = target.base.as_deref();
     let mut fetch = None;
-    let exists = git::branch_exists(&repo, name).map_err(git_err)?;
-    if !exists {
-        check_new_branch(&repo, name, None)?;
-    }
     let start = if exists {
-        if base.is_some() || pull.is_some() {
+        if base.is_some() || target.pull.is_some() {
             return Err(format!(
                 "branch `{name}` already exists; write just `{name}` to check it out"
             ));
         }
         Start::Existing
-    } else if let Some(number) = pull {
-        let pull = pull_fetch(&repo, &remotes, number)?;
-        let start = Start::From(pull.into.clone());
-        fetch = Some(pull);
-        start
-    } else if base.is_none()
-        && let Some(remote) = git::remote_branch(&repo, &remotes, name).map_err(git_err)?
-    {
-        if context.config.fetch_on_create() {
-            fetch = fetch_for(&remotes, &remote);
-        }
-        Start::Tracking(remote)
     } else {
-        let explicit = base.is_some();
-        let base = match base {
-            Some(base) => base.to_owned(),
-            None => default_base(context, &repo).map_err(git_err)?,
-        };
-        if context.config.fetch_on_create() {
-            fetch = fetch_for(&remotes, &base);
+        let remotes = git::remotes(&repo).map_err(git_err)?;
+        if let Some(number) = target.pull {
+            let pull = pull_fetch(&repo, &remotes, number)?;
+            let start = Start::From(pull.into.clone());
+            fetch = Some(pull);
+            start
+        } else if base.is_none()
+            && let Some(remote) = git::remote_branch(&repo, &remotes, name).map_err(git_err)?
+        {
+            if context.config.fetch_on_create() {
+                fetch = fetch_for(&remotes, &remote);
+            }
+            Start::Tracking(remote)
+        } else {
+            let start = match base {
+                Some(base) => base.to_owned(),
+                None => default_base(context, &repo).map_err(git_err)?,
+            };
+            if context.config.fetch_on_create() {
+                fetch = fetch_for(&remotes, &start);
+            }
+            // A remote branch not fetched yet only exists once its fetch runs.
+            if base.is_some()
+                && fetch.is_none()
+                && !git::is_commit(&repo, &start).map_err(git_err)?
+            {
+                return Err(format!("`{start}` is not a branch, tag or commit"));
+            }
+            Start::From(start)
         }
-        // A remote branch not fetched yet only exists once its fetch runs.
-        if explicit && fetch.is_none() && !git::is_commit(&repo, &base).map_err(git_err)? {
-            return Err(format!("`{base}` is not a branch, tag or commit"));
-        }
-        Start::From(base)
     };
     let setup = context.config.repo(&repo, context.home);
     let copy = match setup {
@@ -358,24 +363,6 @@ fn create(
         fetch,
         repo,
     })
-}
-
-/// The branch name and PR number of a create line: `#123` is branch `pr-123`, and
-/// `name@#123` names it.
-fn pull_request(name: &str, base: Option<&str>) -> Result<(String, Option<u32>), String> {
-    let number = |text: &str| {
-        text.parse::<u32>()
-            .map_err(|_| format!("`#{text}` is not a PR number"))
-    };
-    match (name.strip_prefix('#'), base.map(|b| b.strip_prefix('#'))) {
-        (Some(n), None) => {
-            let n = number(n)?;
-            Ok((format!("pr-{n}"), Some(n)))
-        }
-        (Some(_), Some(_)) => Err("write name@#123 to name a PR's worktree".into()),
-        (None, Some(Some(n))) => Ok((name.to_owned(), Some(number(n)?))),
-        (None, _) => Ok((name.to_owned(), None)),
-    }
 }
 
 /// PR `number`'s head from `upstream`, where a fork's PRs live, or else `origin`.
@@ -439,22 +426,11 @@ fn matching_files(repo: &Path, patterns: &[String]) -> Result<Vec<PathBuf>, Stri
     Ok(files)
 }
 
-/// `repo:name`; git forbids `:` in branch names, so the split is never ambiguous.
-fn split_target(target: &str) -> (Option<&str>, &str) {
-    match target.split_once(':') {
-        Some((repo, name)) => (Some(repo.trim()), name.trim()),
-        None => (None, target),
-    }
-}
-
 fn find_repo(worktrees: &[Worktree], name: &str) -> Result<PathBuf, String> {
-    let mut matches = discovery::repos(worktrees)
-        .into_iter()
-        .filter(|repo| repo.file_name().is_some_and(|n| n == name));
-    match (matches.next(), matches.next()) {
-        (Some(repo), None) => Ok(repo),
-        (Some(_), Some(_)) => Err(format!("more than one repo is named `{name}`")),
-        (None, _) => Err(format!("no known repo named `{name}`")),
+    match discovery::repos_named(worktrees, name)[..] {
+        [repo] => Ok(repo.to_path_buf()),
+        [] => Err(format!("no known repo named `{name}`")),
+        _ => Err(format!("more than one repo is named `{name}`")),
     }
 }
 
@@ -746,20 +722,5 @@ mod tests {
         );
 
         assert_eq!(path, Path::new("/h/wt/app/fix"));
-    }
-
-    #[test]
-    fn split_target_should_take_repo_before_colon() {
-        assert_eq!(split_target("app:jb/fix"), (Some("app"), "jb/fix"));
-    }
-
-    #[test]
-    fn split_target_should_trim_around_colon() {
-        assert_eq!(split_target("app : fix"), (Some("app"), "fix"));
-    }
-
-    #[test]
-    fn split_target_should_leave_bare_name_without_repo() {
-        assert_eq!(split_target("fix"), (None, "fix"));
     }
 }

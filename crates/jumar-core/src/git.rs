@@ -98,19 +98,21 @@ pub fn remotes(repo: &Path) -> Result<Vec<String>> {
 ///
 /// Fails when git fails.
 pub fn remote_branch(repo: &Path, remotes: &[String], name: &str) -> Result<Option<String>> {
-    let mut candidates: Vec<&str> = remotes.iter().map(String::as_str).collect();
-    candidates.sort_by_key(|remote| *remote != "origin");
-    for remote in candidates {
-        let full = format!("{remote}/{name}");
-        // With remotes `a` and `a/b`, `a/b/x` is branch `x` of `a/b`, not `b/x` of `a`.
-        let longer = remotes
+    // With remotes `a` and `a/b`, `a/b/x` is branch `x` of `a/b`, not `b/x` of `a`.
+    let branch_of = |full: &str| {
+        remotes
             .iter()
-            .any(|other| other.len() > remote.len() && full.starts_with(&format!("{other}/")));
-        if !longer && ref_exists(repo, &format!("refs/remotes/{full}"))? {
-            return Ok(Some(full));
-        }
-    }
-    Ok(None)
+            .filter(|remote| full.starts_with(remote.as_str()))
+            .filter_map(|remote| full[remote.len()..].strip_prefix('/'))
+            .min_by_key(|branch| branch.len())
+            .map(str::to_owned)
+    };
+    let mut found: Vec<String> = refs_under(repo, "refs/remotes/")?
+        .into_iter()
+        .filter(|full| branch_of(full).as_deref() == Some(name))
+        .collect();
+    found.sort_by_key(|full| !full.starts_with("origin/"));
+    Ok(found.into_iter().next())
 }
 
 /// A branch whose ref stops git from making branch `name`: `name` itself, or a branch it
@@ -121,24 +123,27 @@ pub fn remote_branch(repo: &Path, remotes: &[String], name: &str) -> Result<Opti
 ///
 /// Fails when git fails.
 pub fn clashing_branch(repo: &Path, name: &str, except: Option<&str>) -> Result<Option<String>> {
-    let parents = name.match_indices('/').map(|(i, _)| &name[..i]);
-    for candidate in std::iter::once(name).chain(parents) {
-        if Some(candidate) != except && branch_exists(repo, candidate)? {
-            return Ok(Some(candidate.to_owned()));
-        }
-    }
-    let children = run(
-        repo,
-        &[
-            "for-each-ref",
-            "--format=%(refname:short)",
-            &format!("refs/heads/{name}/"),
-        ],
-    )?;
-    Ok(children
+    let nested = |outer: &str, inner: &str| {
+        inner
+            .strip_prefix(outer)
+            .is_some_and(|rest| rest.starts_with('/'))
+    };
+    Ok(refs_under(repo, "refs/heads/")?
+        .into_iter()
+        .filter(|branch| Some(branch.as_str()) != except)
+        .filter(|branch| branch == name || nested(branch, name) || nested(name, branch))
+        // The name itself first, so an existing branch reads as one.
+        .max_by_key(|branch| branch == name))
+}
+
+/// The refs under `prefix`, like `refs/heads/`, named relative to it.
+fn refs_under(repo: &Path, prefix: &str) -> Result<Vec<String>> {
+    let refs = run(repo, &["for-each-ref", "--format=%(refname)", prefix])?;
+    Ok(refs
         .lines()
-        .find(|child| Some(*child) != except)
-        .map(str::to_owned))
+        .filter_map(|r| r.strip_prefix(prefix))
+        .map(str::to_owned)
+        .collect())
 }
 
 /// # Errors

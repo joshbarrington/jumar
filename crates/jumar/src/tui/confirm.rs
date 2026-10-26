@@ -313,10 +313,14 @@ fn heading(item: &Item, worktrees: &[Worktree], marker: Span<'static>) -> Line<'
             spans.push(Span::raw(label(&remove.worktree)).bold());
         }
         Ok(Step::Move(step)) => {
-            let (name, to) = move_subject(step.to.as_deref(), step.rename_branch.as_deref());
+            let (name, subject) = move_subject(
+                &step.worktree,
+                step.to.as_deref(),
+                step.rename_branch.as_deref(),
+            );
             spans.push(verb(name, theme::YELLOW));
             spans.push(Span::raw("  "));
-            spans.push(Span::raw(format!("{} → {to}", label(&step.worktree))).bold());
+            spans.push(Span::raw(subject).bold());
         }
         Ok(Step::Create(create)) => {
             spans.push(verb("CREATE", theme::GREEN));
@@ -337,11 +341,8 @@ fn heading(item: &Item, worktrees: &[Worktree], marker: Span<'static>) -> Line<'
                     id,
                     to,
                     rename_branch,
-                } => {
-                    let (name, to) = move_subject(to.as_deref(), rename_branch.as_deref());
-                    (name, format!("{} → {to}", label(&worktrees[id.0])))
-                }
-                Operation::Create { target, .. } => ("CREATE", target.clone()),
+                } => move_subject(&worktrees[id.0], to.as_deref(), rename_branch.as_deref()),
+                Operation::Create { target, .. } => ("CREATE", target.to_string()),
             };
             spans.push(verb(name, theme::GRAY));
             spans.push(Span::raw("  "));
@@ -412,15 +413,17 @@ fn details(item: &Item, home: &Path) -> Vec<Line<'static>> {
                             create.branch, fetch.remote
                         )
                     }
-                    Start::From(base) if create.fetch.is_some() => {
-                        format!("new {} from {base}, fetched first", create.branch)
-                    }
-                    Start::From(base) => format!("new {} from {base}", create.branch),
-                    Start::Tracking(remote) if create.fetch.is_some() => {
-                        format!("new {} tracking {remote}, fetched first", create.branch)
-                    }
-                    Start::Tracking(remote) => {
-                        format!("new {} tracking {remote}", create.branch)
+                    Start::From(rev) | Start::Tracking(rev) => {
+                        let how = match create.start {
+                            Start::Tracking(_) => "tracking",
+                            _ => "from",
+                        };
+                        let fetched = if create.fetch.is_some() {
+                            ", fetched first"
+                        } else {
+                            ""
+                        };
+                        format!("new {} {how} {rev}{fetched}", create.branch)
                     }
                 },
             ));
@@ -573,12 +576,17 @@ fn detail(text: &str) -> Line<'static> {
     Line::from(format!("            {text}"))
 }
 
-/// The verb and new name of a move: its directory, or its branch when only that changes.
-fn move_subject(to: Option<&Path>, branch: Option<&str>) -> (&'static str, String) {
-    match to {
+/// The verb and `old → new` of a move: its directory, or its branch when only that changes.
+fn move_subject(
+    worktree: &Worktree,
+    to: Option<&Path>,
+    branch: Option<&str>,
+) -> (&'static str, String) {
+    let (name, new) = match to {
         Some(to) => ("MOVE", format::file_name(to)),
         None => ("RENAME", branch.unwrap_or_default().to_owned()),
-    }
+    };
+    (name, format!("{} → {new}", label(worktree)))
 }
 
 fn verb(name: &'static str, color: Color) -> Span<'static> {

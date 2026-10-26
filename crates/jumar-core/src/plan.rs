@@ -1,4 +1,5 @@
 use std::collections::HashSet;
+use std::fmt;
 use std::path::{Path, PathBuf};
 
 use crate::model::{Head, Health, Worktree};
@@ -13,7 +14,8 @@ pub enum Line {
         id: EntryId,
         name: String,
     },
-    /// Raw `target[@base]` text; the target is resolved to a repo and source on apply.
+    /// Raw text, parsed by [`parse_target`]; the target is resolved to a repo and source
+    /// on apply.
     New {
         text: String,
         /// The worktree the cursor was on when the line was opened.
@@ -33,12 +35,83 @@ pub enum Operation {
         rename_branch: Option<String>,
     },
     Create {
-        target: String,
-        base: Option<String>,
+        target: Target,
         /// The closest existing line above (or else below), whose repo and source a
         /// bare `name` inherits.
         near: Option<EntryId>,
     },
+}
+
+/// A new line, `[repo:]name[@start]`, where `#123` alone is PR 123 as branch `pr-123`
+/// and `name@#123` names it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Target {
+    pub repo: Option<String>,
+    pub name: String,
+    /// Where a new branch starts; never set for a PR.
+    pub base: Option<String>,
+    pub pull: Option<u32>,
+}
+
+impl fmt::Display for Target {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if let Some(repo) = &self.repo {
+            write!(f, "{repo}:")?;
+        }
+        match (self.pull, &self.base) {
+            (Some(n), _) if self.name == format!("pr-{n}") => write!(f, "#{n}"),
+            (Some(n), _) => write!(f, "{}@#{n}", self.name),
+            (None, Some(base)) => write!(f, "{}@{base}", self.name),
+            (None, None) => write!(f, "{}", self.name),
+        }
+    }
+}
+
+/// Parses a new line's text. Splits on the first `@`, then the first `:`; git forbids
+/// both in branch names, so neither split is ambiguous.
+///
+/// # Errors
+///
+/// Returns what is missing or malformed, reported against line `line`.
+pub fn parse_target(text: &str, line: usize) -> Result<Target, PlanError> {
+    let (target, base) = match text.split_once('@') {
+        Some((target, base)) => (target.trim(), Some(base.trim())),
+        None => (text.trim(), None),
+    };
+    let (repo, name) = match target.split_once(':') {
+        Some((repo, name)) => (Some(repo.trim()), name.trim()),
+        None => (None, target),
+    };
+    if name.is_empty() {
+        return Err(PlanError::MissingTarget { line });
+    }
+    if base == Some("") {
+        return Err(PlanError::MissingBase { line });
+    }
+    if repo == Some("") {
+        return Err(PlanError::MissingRepo { line });
+    }
+    let number = |text: &str| {
+        text.parse::<u32>().map_err(|_| PlanError::BadPull {
+            line,
+            text: text.to_owned(),
+        })
+    };
+    let (name, base, pull) = match (name.strip_prefix('#'), base.map(|b| b.strip_prefix('#'))) {
+        (Some(n), None) => {
+            let n = number(n)?;
+            (format!("pr-{n}"), None, Some(n))
+        }
+        (Some(_), Some(_)) => return Err(PlanError::NamedPull { line }),
+        (None, Some(Some(n))) => (name.to_owned(), None, Some(number(n)?)),
+        (None, _) => (name.to_owned(), base.map(str::to_owned), None),
+    };
+    Ok(Target {
+        repo: repo.map(str::to_owned),
+        name,
+        base,
+        pull,
+    })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -57,6 +130,12 @@ pub enum PlanError {
     MissingTarget { line: usize },
     #[error("line {line}: write a start after `@`, or leave out the `@`")]
     MissingBase { line: usize },
+    #[error("line {line}: write a repo before `:`, or leave out the `:`")]
+    MissingRepo { line: usize },
+    #[error("line {line}: `#{text}` is not a PR number")]
+    BadPull { line: usize, text: String },
+    #[error("line {line}: write name@#123 to name a PR's worktree")]
+    NamedPull { line: usize },
 }
 
 /// Diffs the edited buffer against `original`. Operations come back in apply order:
@@ -91,21 +170,22 @@ pub fn plan(original: &[Worktree], lines: &[Line]) -> Result<Vec<Operation>, Vec
                     continue;
                 }
                 let name = name.trim();
-                let dir = dir_name(&worktree.path);
+                let dir = dir_name_for(name);
+                let same_dir = is_dir_of(&dir, &worktree.path);
+                let rename_branch = renamed_branch(worktree, name);
+                // The buffer shows directories, so an untouched line is a no-op, while
                 // `jb-a` to `jb/a` keeps the directory but can still rename the branch.
-                if Some(name) == dir
-                    || (Some(dir_name_for(name).as_str()) == dir
-                        && renamed_branch(worktree, name).is_none())
-                {
+                if same_dir && (Some(name) == dir_name(&worktree.path) || rename_branch.is_none()) {
                     continue;
                 }
-                if !is_valid_dir_name(&dir_name_for(name)) {
+                if !is_valid_dir_name(&dir) {
                     errors.push(PlanError::InvalidName {
                         line: line_no,
                         name: name.to_owned(),
                     });
                 } else if worktree.health == Health::Healthy {
-                    moves.push((line_no, *id, worktree, name));
+                    let to = (!same_dir).then(|| worktree.path.with_file_name(dir));
+                    moves.push((line_no, *id, to, rename_branch));
                 } else {
                     errors.push(PlanError::Unhealthy { line: line_no });
                 }
@@ -115,20 +195,12 @@ pub fn plan(original: &[Worktree], lines: &[Line]) -> Result<Vec<Operation>, Vec
                 if text.is_empty() {
                     continue;
                 }
-                let (target, base) = match text.split_once('@') {
-                    Some((target, base)) => (target.trim(), Some(base.trim().to_owned())),
-                    None => (text, None),
-                };
-                if target.is_empty() {
-                    errors.push(PlanError::MissingTarget { line: line_no });
-                } else if base.as_deref() == Some("") {
-                    errors.push(PlanError::MissingBase { line: line_no });
-                } else {
-                    creates.push(Operation::Create {
-                        target: target.to_owned(),
-                        base,
+                match parse_target(text, line_no) {
+                    Ok(target) => creates.push(Operation::Create {
+                        target,
                         near: opened.or(near),
-                    });
+                    }),
+                    Err(err) => errors.push(err),
                 }
             }
         }
@@ -142,9 +214,7 @@ pub fn plan(original: &[Worktree], lines: &[Line]) -> Result<Vec<Operation>, Vec
         .filter(|id| !seen.contains(id) && !original[id.0].main)
         .map(|id| Operation::Remove { id })
         .collect();
-    for (line, id, worktree, name) in moves {
-        let path = worktree.path.with_file_name(dir_name_for(name));
-        let to = (path != worktree.path).then_some(path);
+    for (line, id, to, rename_branch) in moves {
         if let Some(to) = &to
             && !taken.insert(to.clone())
         {
@@ -157,7 +227,7 @@ pub fn plan(original: &[Worktree], lines: &[Line]) -> Result<Vec<Operation>, Vec
         operations.push(Operation::Move {
             id,
             to,
-            rename_branch: renamed_branch(worktree, name),
+            rename_branch,
         });
     }
     operations.extend(creates);
@@ -180,7 +250,10 @@ impl PlanError {
             | Self::Unhealthy { line }
             | Self::Collision { line, .. }
             | Self::MissingTarget { line }
-            | Self::MissingBase { line } => *line,
+            | Self::MissingBase { line }
+            | Self::MissingRepo { line }
+            | Self::BadPull { line, .. }
+            | Self::NamedPull { line } => *line,
         }
     }
 }
@@ -196,8 +269,7 @@ fn existing_id(original: &[Worktree], line: &Line) -> Option<EntryId> {
 fn renamed_branch(worktree: &Worktree, name: &str) -> Option<String> {
     match &worktree.head {
         Some(Head::Branch(branch))
-            if branch != name
-                && Some(dir_name_for(branch).as_str()) == dir_name(&worktree.path) =>
+            if branch != name && is_dir_of(&dir_name_for(branch), &worktree.path) =>
         {
             Some(name.to_owned())
         }
@@ -207,6 +279,10 @@ fn renamed_branch(worktree: &Worktree, name: &str) -> Option<String> {
 
 fn dir_name(path: &Path) -> Option<&str> {
     path.file_name()?.to_str()
+}
+
+fn is_dir_of(dir: &str, path: &Path) -> bool {
+    dir_name(path) == Some(dir)
 }
 
 /// The directory for branch `name`: `jb/fix` lives in `jb-fix`, so every worktree stays
@@ -323,8 +399,12 @@ mod tests {
         let ops = plan(&original(), &lines).unwrap();
 
         let expected = Operation::Create {
-            target: "app:fix".into(),
-            base: None,
+            target: Target {
+                repo: Some("app".into()),
+                name: "fix".into(),
+                base: None,
+                pull: None,
+            },
             near: Some(EntryId(1)),
         };
         assert_eq!(ops, [expected]);
@@ -393,7 +473,9 @@ mod tests {
 
         let ops = plan(&original(), &lines).unwrap();
 
-        assert!(matches!(&ops[0], Operation::Create { base: Some(b), .. } if b == "dev"));
+        assert!(
+            matches!(&ops[0], Operation::Create { target, .. } if target.base.as_deref() == Some("dev"))
+        );
     }
 
     #[test]
@@ -575,5 +657,68 @@ mod tests {
 
         let lines: Vec<_> = errors.iter().map(PlanError::line).collect();
         assert_eq!(lines, [1, 2, 3]);
+    }
+
+    fn parsed(text: &str) -> Result<Target, PlanError> {
+        parse_target(text, 1)
+    }
+
+    #[test]
+    fn parse_target_should_read_repo_name_and_start() {
+        let target = parsed(" api : jb/fix @ origin/dev ").unwrap();
+
+        assert_eq!(
+            target,
+            Target {
+                repo: Some("api".into()),
+                name: "jb/fix".into(),
+                base: Some("origin/dev".into()),
+                pull: None,
+            }
+        );
+    }
+
+    #[test]
+    fn parse_target_should_name_a_bare_pr_after_its_number() {
+        let target = parsed("#7").unwrap();
+
+        assert_eq!((target.name.as_str(), target.pull), ("pr-7", Some(7)));
+    }
+
+    #[test]
+    fn parse_target_should_keep_a_given_name_for_a_pr() {
+        let target = parsed("review@#7").unwrap();
+
+        assert_eq!(
+            (target.name.as_str(), target.base, target.pull),
+            ("review", None, Some(7))
+        );
+    }
+
+    #[test]
+    fn parse_target_should_reject_malformed_lines() {
+        let errors =
+            ["app:", ":fix", "fix@", "#seven", "#1@#2"].map(|text| parsed(text).unwrap_err());
+
+        assert_eq!(
+            errors,
+            [
+                PlanError::MissingTarget { line: 1 },
+                PlanError::MissingRepo { line: 1 },
+                PlanError::MissingBase { line: 1 },
+                PlanError::BadPull {
+                    line: 1,
+                    text: "seven".into()
+                },
+                PlanError::NamedPull { line: 1 },
+            ]
+        );
+    }
+
+    #[test]
+    fn target_should_display_as_written() {
+        let shown = ["api:fix@v2", "#7", "review@#7"].map(|text| parsed(text).unwrap().to_string());
+
+        assert_eq!(shown, ["api:fix@v2", "#7", "review@#7"]);
     }
 }
