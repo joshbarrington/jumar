@@ -98,11 +98,11 @@ impl fmt::Display for Target {
 pub enum TargetError {
     #[error("type a branch, or a directory and then a branch")]
     MissingBranch,
-    #[error("write a start after `@`, or leave out the `@`")]
+    #[error("write a base after `@`, or leave out the `@`")]
     MissingBase,
     #[error("write a repo before `:`, or leave out the `:`")]
     MissingRepo,
-    #[error("write a directory and a branch, with nothing after them but @start")]
+    #[error("write a directory and a branch, with nothing after them but @base")]
     TooManyWords,
     #[error("`{0}` is not a valid directory name")]
     InvalidDir(String),

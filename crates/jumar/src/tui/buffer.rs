@@ -604,7 +604,7 @@ fn hint_line(row: &Row) -> Line<'static> {
 fn new_line_hint(text: &str, in_repo: bool) -> Span<'static> {
     if text.trim().is_empty() {
         let help = if in_repo {
-            "type a branch, or a directory then a branch · @start · #123 for a PR"
+            "[dir] branch[@base]  ·  [dir] #pr_number  ·  [dir] branch@#pr_number  ·  repo: in front for another repo"
         } else {
             "type a repo's path, then : and a branch, like ~/code/app:feat"
         };
@@ -740,10 +740,7 @@ mod tests {
     fn new_line_hint_should_say_why_a_line_cannot_be_read() {
         let hint = new_line_hint("fix@", true);
 
-        assert_eq!(
-            hint.content,
-            "write a start after `@`, or leave out the `@`"
-        );
+        assert_eq!(hint.content, "write a base after `@`, or leave out the `@`");
     }
 
     #[test]
