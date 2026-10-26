@@ -162,8 +162,11 @@ what it will create, or why it can't:
 | `review@#123` | pull request 123, as branch `review` |
 
 - `app/fix` is always the branch `app/fix`, even if you have a repo named `app`.
-- Before `:`, text with a `/`, or that starts with `~` or `.`, is a path to a repo; anything
-  else is the name of a listed repo. If jumar lists no repos, press `o` and give a path.
+- Before `:`, text with a `/` or a leading `~`, or `.` alone, is a path to a repo; anything
+  else, like `.dotfiles`, is the name of a listed repo. If jumar lists no repos, press `o`
+  and give a path.
+- A new line that checks out an existing branch is blocked if another worktree already has
+  that branch checked out.
 - jumar blocks a start that is not a branch, tag or commit before it changes anything. A
   remote branch that is not fetched yet, such as `origin/new`, is allowed when
   `fetch_on_create` is on. If its fetch fails, nothing is created.

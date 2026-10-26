@@ -508,6 +508,21 @@ fn prepare_create_should_use_given_base() {
 }
 
 #[test]
+fn prepare_create_should_block_a_branch_checked_out_in_another_worktree() {
+    let fx = Fixture::new();
+
+    let blocked = fx.create("other feat", None).unwrap_err();
+
+    assert_eq!(
+        blocked.reason,
+        format!(
+            "branch `feat` is checked out in {}",
+            fx.worktrees[0].path.display()
+        )
+    );
+}
+
+#[test]
 fn prepare_create_should_check_out_existing_branch() {
     let fx = Fixture::new();
     git(&fx.repo(), &["branch", "old"]);

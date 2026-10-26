@@ -59,12 +59,12 @@ fn remote_branch_should_pick_the_longest_remote_a_ref_belongs_to() {
     let dir = tempfile::tempdir().unwrap();
     init_repo(dir.path());
     git(dir.path(), &["update-ref", "refs/remotes/a/b/x", "HEAD"]);
-    let remotes = ["a".to_owned(), "a/b".to_owned()];
+    let refs = git::Refs {
+        remotes: vec!["a".to_owned(), "a/b".to_owned()],
+        ..git::Refs::read(dir.path()).unwrap()
+    };
 
-    let found = (
-        git::remote_branch(dir.path(), &remotes, "b/x").unwrap(),
-        git::remote_branch(dir.path(), &remotes, "x").unwrap(),
-    );
+    let found = (refs.remote_branch("b/x"), refs.remote_branch("x"));
 
     assert_eq!(found, (None, Some("a/b/x".to_owned())));
 }

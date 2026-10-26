@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Output, Stdio};
@@ -139,9 +139,10 @@ pub fn prepare(context: &Context, operations: Vec<Operation>) -> Vec<Result<Step
     // that another line takes, or that an earlier step removes or renames.
     let mut taken: Vec<(PathBuf, String)> = Vec::new();
     let mut changed: Vec<(PathBuf, String, &str)> = Vec::new();
+    let mut refs = RefCache::default();
     let mut results = Vec::new();
     for operation in operations {
-        let resolved = resolve(context, &operation).and_then(|step| {
+        let resolved = resolve(context, &mut refs, &operation).and_then(|step| {
             // `jb/fix` and `jb-fix` share a directory, which only one line can have.
             let (path, branch) = claims(&step);
             if let Some(path) = path
@@ -163,6 +164,18 @@ pub fn prepare(context: &Context, operations: Vec<Operation>) -> Vec<Result<Step
                         "this save also {what} branch `{other}`; apply that first"
                     ));
                 }
+                // git checks a branch out in only one worktree at a time.
+                if let Step::Create(create) = &step
+                    && matches!(create.start, Start::Existing)
+                    && let Some(other) = context.worktrees.iter().find(|w| {
+                        w.repo == repo && w.head.as_ref() == Some(&Head::Branch(branch.to_owned()))
+                    })
+                {
+                    return Err(format!(
+                        "branch `{branch}` is checked out in {}",
+                        other.path.display()
+                    ));
+                }
                 taken.push((repo.to_path_buf(), branch.to_owned()));
             }
             paths.extend(path.map(Path::to_path_buf));
@@ -172,6 +185,20 @@ pub fn prepare(context: &Context, operations: Vec<Operation>) -> Vec<Result<Step
         results.push(resolved.map_err(|reason| Blocked { operation, reason }));
     }
     results
+}
+
+/// Each repo's refs, read the first time a step needs them.
+#[derive(Default)]
+struct RefCache(HashMap<PathBuf, git::Refs>);
+
+impl RefCache {
+    fn get(&mut self, repo: &Path) -> Result<&git::Refs, String> {
+        if !self.0.contains_key(repo) {
+            let refs = git::Refs::read(repo).map_err(git_err)?;
+            self.0.insert(repo.to_path_buf(), refs);
+        }
+        Ok(&self.0[repo])
+    }
 }
 
 /// The branch a step takes away from where it is now, and how.
@@ -204,7 +231,7 @@ fn claims(step: &Step) -> (Option<&Path>, Option<(&Path, &str)>) {
     }
 }
 
-fn resolve(context: &Context, operation: &Operation) -> Result<Step, String> {
+fn resolve(context: &Context, refs: &mut RefCache, operation: &Operation) -> Result<Step, String> {
     match operation {
         Operation::Remove { id } => remove(context, *id),
         Operation::Move {
@@ -223,7 +250,7 @@ fn resolve(context: &Context, operation: &Operation) -> Result<Step, String> {
                 return Err("an agent is running in its herdr workspace".into());
             }
             if let (Some(new), Some(Head::Branch(old))) = (rename_branch, &worktree.head) {
-                check_new_branch(&worktree.repo, new, old)?;
+                check_new_branch(refs.get(&worktree.repo)?, &worktree.repo, new, old)?;
             }
             Ok(Step::Move(Move {
                 worktree: worktree.clone(),
@@ -233,15 +260,17 @@ fn resolve(context: &Context, operation: &Operation) -> Result<Step, String> {
                 workspace: workspace.filter(|_| to.is_some()).map(|w| w.id.clone()),
             }))
         }
-        Operation::Create { target, near } => create(context, target, *near).map(Step::Create),
+        Operation::Create { target, near } => {
+            create(context, refs, target, *near).map(Step::Create)
+        }
     }
 }
 
 /// Checked before anything runs, since a failed `git branch -m` would leave a move half
 /// done. `old` is the branch being renamed, which git lets the new name replace.
-fn check_new_branch(repo: &Path, branch: &str, old: &str) -> Result<(), String> {
+fn check_new_branch(refs: &git::Refs, repo: &Path, branch: &str, old: &str) -> Result<(), String> {
     check_branch_name(repo, branch)?;
-    match git::clashing_branch(repo, branch, Some(old)).map_err(git_err)? {
+    match refs.clashing_branch(branch, Some(old)) {
         Some(clash) if clash == branch => Err(format!("branch `{branch}` already exists")),
         Some(clash) => Err(clash_reason(&clash, branch)),
         None => Ok(()),
@@ -300,7 +329,12 @@ fn remove(context: &Context, id: EntryId) -> Result<Step, String> {
     }))
 }
 
-fn create(context: &Context, target: &Target, near: Option<EntryId>) -> Result<Create, String> {
+fn create(
+    context: &Context,
+    refs: &mut RefCache,
+    target: &Target,
+    near: Option<EntryId>,
+) -> Result<Create, String> {
     let name = target.name.as_str();
     let repo = match &target.repo {
         Some(repo) => find_repo(context, repo)?,
@@ -318,7 +352,8 @@ fn create(context: &Context, target: &Target, near: Option<EntryId>) -> Result<C
         return Err(format!("{} already exists", path.display()));
     }
     check_branch_name(&repo, name)?;
-    let exists = match git::clashing_branch(&repo, name, None).map_err(git_err)? {
+    let refs = refs.get(&repo)?;
+    let exists = match refs.clashing_branch(name, None) {
         Some(clash) if clash == name => true,
         Some(clash) => return Err(clash_reason(&clash, name)),
         None => false,
@@ -333,17 +368,17 @@ fn create(context: &Context, target: &Target, near: Option<EntryId>) -> Result<C
         }
         Start::Existing
     } else {
-        let remotes = git::remotes(&repo).map_err(git_err)?;
+        let remotes = &refs.remotes;
         if let Some(number) = target.pull {
-            let pull = pull_fetch(&repo, &remotes, number)?;
+            let pull = pull_fetch(&repo, remotes, number)?;
             let start = Start::From(pull.into.clone());
             fetch = Some(pull);
             start
         } else if base.is_none()
-            && let Some(remote) = git::remote_branch(&repo, &remotes, name).map_err(git_err)?
+            && let Some(remote) = refs.remote_branch(name)
         {
             if context.config.fetch_on_create() {
-                fetch = fetch_for(&remotes, &remote);
+                fetch = fetch_for(remotes, &remote);
             }
             Start::Tracking(remote)
         } else {
@@ -352,7 +387,7 @@ fn create(context: &Context, target: &Target, near: Option<EntryId>) -> Result<C
                 None => default_base(context, &repo).map_err(git_err)?,
             };
             if context.config.fetch_on_create() {
-                fetch = fetch_for(&remotes, &start);
+                fetch = fetch_for(remotes, &start);
             }
             // A remote branch not fetched yet only exists once its fetch runs.
             if base.is_some()
@@ -404,20 +439,13 @@ fn pull_fetch(repo: &Path, remotes: &[String], number: u32) -> Result<Fetch, Str
 
 /// `base` as a branch of one of the repo's remotes, like `origin/main`.
 fn fetch_for(remotes: &[String], base: &str) -> Option<Fetch> {
-    let base = base.strip_prefix("refs/remotes/").unwrap_or(base);
-    remotes
-        .iter()
-        .filter_map(|remote| {
-            let branch = base.strip_prefix(remote)?.strip_prefix('/')?;
-            Some(Fetch {
-                remote: remote.to_owned(),
-                from: format!("refs/heads/{branch}"),
-                into: format!("refs/remotes/{remote}/{branch}"),
-                pull: None,
-            })
-        })
-        // A remote named `a/b` beats `a` for `a/b/c`.
-        .max_by_key(|found| found.remote.len())
+    let (remote, branch) = git::split_remote(remotes, base)?;
+    Some(Fetch {
+        remote: remote.to_owned(),
+        from: format!("refs/heads/{branch}"),
+        into: format!("refs/remotes/{remote}/{branch}"),
+        pull: None,
+    })
 }
 
 /// Files in `repo` matching `patterns`, relative to it. Git's own directory and paths
@@ -449,8 +477,10 @@ fn find_repo(context: &Context, name: &str) -> Result<PathBuf, String> {
         return discovery::repo_containing(&path)
             .ok_or_else(|| format!("{name} is not a git repo"));
     }
-    match discovery::repos_named(context.worktrees, name)[..] {
-        [repo] => Ok(repo.to_path_buf()),
+    let mut found = discovery::repos(context.worktrees);
+    found.retain(|repo| repo.file_name().is_some_and(|n| n == name));
+    match &found[..] {
+        [repo] => Ok(repo.clone()),
         [] => Err(format!("no known repo named `{name}`")),
         _ => Err(format!("more than one repo is named `{name}`")),
     }

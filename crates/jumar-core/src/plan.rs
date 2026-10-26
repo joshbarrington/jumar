@@ -108,18 +108,20 @@ pub enum TargetError {
     InvalidDir(String),
     #[error("`#{0}` is not a PR number")]
     BadPull(String),
-    #[error("write branch@#123 to name a PR's branch")]
-    NamedPull,
+    #[error("a PR starts from its own head; write name@#123 to name its branch")]
+    PullStart,
+    #[error("write the repo and `:` at the start of the line, like app:tui feat")]
+    LateRepo,
 }
 
 /// Whether the part before `:` is a path rather than a repo's name, which has no `/`.
 #[must_use]
 pub fn is_repo_path(repo: &str) -> bool {
-    repo.contains('/') || repo.starts_with(['~', '.'])
+    repo.contains('/') || repo.starts_with('~') || repo == "." || repo == ".."
 }
 
-/// Parses a new line's text. Splits on the first `@`, then on spaces, then on the first
-/// `:`. git forbids spaces and `:` in branch names, but not `@`, so a branch such as
+/// Parses a new line's text. Splits on the first `@`, then on a first word's `:`, then on
+/// spaces. git forbids spaces and `:` in branch names, but not `@`, so a branch such as
 /// `jb@fix` cannot be written here.
 ///
 /// # Errors
@@ -130,23 +132,21 @@ pub fn parse_target(text: &str) -> Result<Target, TargetError> {
         Some((target, base)) => (target.trim(), Some(base.trim())),
         None => (text.trim(), None),
     };
+    // Only a first word can be a repo, so `tui api:fix` is not one.
+    let (repo, target) = match target.split_once(':') {
+        Some((repo, rest)) if !repo.contains(char::is_whitespace) => (Some(repo), rest),
+        _ => (None, target),
+    };
     let words: Vec<&str> = target.split_whitespace().collect();
-    let (first, dir, branch) = match words[..] {
+    let (dir, branch) = match words[..] {
         [] => return Err(TargetError::MissingBranch),
-        [branch] => (branch, None, branch),
-        [dir, branch] => (dir, Some(dir), branch),
+        [branch] => (None, branch),
+        [dir, branch] => (Some(dir), branch),
         _ => return Err(TargetError::TooManyWords),
     };
-    let (repo, rest) = match first.split_once(':') {
-        Some((repo, rest)) => (Some(repo), rest),
-        None => (None, first),
-    };
-    // The repo prefix belongs to whichever word comes first; `app: fix` has no directory.
-    let (dir, branch) = match dir {
-        Some(_) if !rest.is_empty() => (Some(rest), branch),
-        Some(_) => (None, branch),
-        None => (None, rest),
-    };
+    if words.iter().any(|word| word.contains(':')) {
+        return Err(TargetError::LateRepo);
+    }
     if repo == Some("") {
         return Err(TargetError::MissingRepo);
     }
@@ -165,7 +165,7 @@ pub fn parse_target(text: &str) -> Result<Target, TargetError> {
             let n = number(n)?;
             (format!("pr-{n}"), None, Some(n))
         }
-        (Some(_), Some(_)) => return Err(TargetError::NamedPull),
+        (Some(_), Some(_)) => return Err(TargetError::PullStart),
         (None, Some(Some(n))) => (branch.to_owned(), None, Some(number(n)?)),
         (None, _) => (branch.to_owned(), base.map(str::to_owned), None),
     };
@@ -215,12 +215,7 @@ pub fn plan(original: &[Worktree], lines: &[Line]) -> Result<Vec<Operation>, Vec
     let mut seen = HashSet::new();
     let mut moves = Vec::new();
     let mut creates = Vec::new();
-    let mut near = lines.iter().find_map(|line| existing_id(original, line));
-
     for (index, line) in lines.iter().enumerate() {
-        if let Some(id) = existing_id(original, line) {
-            near = Some(id);
-        }
         let line_no = index + 1;
         match line {
             Line::Existing { id, text } => {
@@ -241,7 +236,7 @@ pub fn plan(original: &[Worktree], lines: &[Line]) -> Result<Vec<Operation>, Vec
                     Err(err) => errors.push(err),
                 }
             }
-            Line::New { text, near: opened } => {
+            Line::New { text, near } => {
                 let text = text.trim();
                 if text.is_empty() {
                     continue;
@@ -249,7 +244,7 @@ pub fn plan(original: &[Worktree], lines: &[Line]) -> Result<Vec<Operation>, Vec
                 match parse_target(text) {
                     Ok(target) => creates.push(Operation::Create {
                         target,
-                        near: opened.or(near),
+                        near: *near,
                     }),
                     Err(source) => errors.push(PlanError::Target {
                         line: line_no,
@@ -338,13 +333,6 @@ fn edit(worktree: &Worktree, text: &str, line: usize) -> Result<Option<Edit>, Pl
         Ok(Some(Edit { to, rename_branch }))
     } else {
         Err(PlanError::Unhealthy { line })
-    }
-}
-
-fn existing_id(original: &[Worktree], line: &Line) -> Option<EntryId> {
-    match line {
-        Line::Existing { id, .. } if id.0 < original.len() => Some(*id),
-        _ => None,
     }
 }
 
@@ -539,24 +527,9 @@ mod tests {
                 base: None,
                 pull: None,
             },
-            near: Some(EntryId(1)),
+            near: None,
         };
         assert_eq!(ops, [expected]);
-    }
-
-    #[test]
-    fn plan_should_take_context_from_line_above_new_line() {
-        let lines = [keep(0, "a a"), new("x"), keep(1, "b feature/b")];
-
-        let ops = plan(&original(), &lines).unwrap();
-
-        assert!(matches!(
-            &ops[0],
-            Operation::Create {
-                near: Some(EntryId(0)),
-                ..
-            }
-        ));
     }
 
     #[test]
@@ -579,23 +552,10 @@ mod tests {
     }
 
     #[test]
-    fn plan_should_take_context_from_line_below_when_new_line_is_first() {
-        let lines = [new("x"), keep(1, "b feature/b"), keep(0, "a a")];
+    fn plan_should_leave_a_new_line_without_context_when_it_was_opened_on_none() {
+        let lines = [keep(0, "a a"), new("x"), keep(1, "b feature/b")];
 
         let ops = plan(&original(), &lines).unwrap();
-
-        assert!(matches!(
-            &ops[0],
-            Operation::Create {
-                near: Some(EntryId(1)),
-                ..
-            }
-        ));
-    }
-
-    #[test]
-    fn plan_should_have_no_context_when_buffer_has_no_existing_lines() {
-        let ops = plan(&[], &[new("x")]).unwrap();
 
         assert!(matches!(&ops[0], Operation::Create { near: None, .. }));
     }
@@ -760,10 +720,15 @@ mod tests {
     #[test]
     fn parse_target_should_give_a_lone_branch_its_repo() {
         assert_eq!(
-            [parse_target("api:feat/x"), parse_target("api: feat/x")],
+            [
+                parse_target("api:feat/x"),
+                parse_target("api: feat/x"),
+                parse_target("api: tui feat/x"),
+            ],
             [
                 Ok(target(Some("api"), "feat-x", "feat/x", None)),
-                Ok(target(Some("api"), "feat-x", "feat/x", None))
+                Ok(target(Some("api"), "feat-x", "feat/x", None)),
+                Ok(target(Some("api"), "tui", "feat/x", None)),
             ]
         );
     }
@@ -796,7 +761,16 @@ mod tests {
     #[test]
     fn parse_target_should_reject_malformed_lines() {
         let errors = [
-            "app:", ":fix", "fix@", "#seven", "#1@#2", "a b c", "x/y fix", "@dev",
+            "app:",
+            ":fix",
+            "fix@",
+            "#seven",
+            "#1@#2",
+            "a b c",
+            "x/y fix",
+            "@dev",
+            "#7@dev",
+            "tui api:fix",
         ]
         .map(|text| parse_target(text).unwrap_err());
 
@@ -807,11 +781,21 @@ mod tests {
                 TargetError::MissingRepo,
                 TargetError::MissingBase,
                 TargetError::BadPull("seven".into()),
-                TargetError::NamedPull,
+                TargetError::PullStart,
                 TargetError::TooManyWords,
                 TargetError::InvalidDir("x/y".into()),
                 TargetError::MissingBranch,
+                TargetError::PullStart,
+                TargetError::LateRepo,
             ]
+        );
+    }
+
+    #[test]
+    fn is_repo_path_should_read_a_dotted_name_as_a_repo_name() {
+        assert_eq!(
+            [".dotfiles", "~/code/app", "./app", ".", "app"].map(is_repo_path),
+            [false, true, true, true, false]
         );
     }
 

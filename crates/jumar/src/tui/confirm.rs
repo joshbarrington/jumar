@@ -593,11 +593,21 @@ fn move_subject(
     to: Option<&Path>,
     branch: Option<&str>,
 ) -> (&'static str, String) {
-    let (name, new) = match to {
-        Some(to) => ("MOVE", format::file_name(to)),
-        None => ("RENAME", branch.unwrap_or_default().to_owned()),
-    };
-    (name, format!("{} → {new}", label(worktree)))
+    match (to, &worktree.head) {
+        (Some(to), _) => (
+            "MOVE",
+            format!("{} → {}", label(worktree), format::file_name(to)),
+        ),
+        (None, Some(Head::Branch(old))) => (
+            "RENAME",
+            format!(
+                "{}  {old} → {}",
+                label(worktree),
+                branch.unwrap_or_default()
+            ),
+        ),
+        (None, _) => ("RENAME", label(worktree)),
+    }
 }
 
 fn verb(name: &'static str, color: Color) -> Span<'static> {

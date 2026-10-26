@@ -46,19 +46,6 @@ pub fn repos(worktrees: &[Worktree]) -> Vec<PathBuf> {
         .collect()
 }
 
-/// The known repos whose directory is named `name`, as `repo:` picks them.
-#[must_use]
-pub fn repos_named<'a>(worktrees: &'a [Worktree], name: &str) -> Vec<&'a Path> {
-    let mut found: Vec<&Path> = Vec::new();
-    for worktree in worktrees {
-        let repo = worktree.repo.as_path();
-        if repo.file_name().is_some_and(|n| n == name) && !found.contains(&repo) {
-            found.push(repo);
-        }
-    }
-    found
-}
-
 /// The main checkout of the repo containing `dir`, or `None` when `dir` is not in one.
 #[must_use]
 pub fn repo_containing(dir: &Path) -> Option<PathBuf> {

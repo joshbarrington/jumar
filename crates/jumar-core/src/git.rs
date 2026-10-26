@@ -85,50 +85,83 @@ pub fn branch_exists(repo: &Path, name: &str) -> Result<bool> {
     ref_exists(repo, &format!("refs/heads/{name}"))
 }
 
-/// # Errors
-///
-/// Fails when git fails.
-pub fn remotes(repo: &Path) -> Result<Vec<String>> {
-    Ok(run(repo, &["remote"])?.lines().map(str::to_owned).collect())
+/// A repo's branches, fetched remote branches and remotes, read once so that every line
+/// of a save is checked against the same refs.
+#[derive(Debug, Clone, Default)]
+pub struct Refs {
+    pub heads: Vec<String>,
+    /// Like `origin/main`.
+    pub remote_branches: Vec<String>,
+    pub remotes: Vec<String>,
 }
 
-/// `remote/name` when one of `remotes`, `origin` first, has a fetched branch `name`.
-///
-/// # Errors
-///
-/// Fails when git fails.
-pub fn remote_branch(repo: &Path, remotes: &[String], name: &str) -> Result<Option<String>> {
-    // With remotes `a` and `a/b`, `a/b/x` is branch `x` of `a/b`, not `b/x` of `a`.
-    let branch_of = |full: &str| {
-        remotes
+impl Refs {
+    /// # Errors
+    ///
+    /// Fails when git fails.
+    pub fn read(repo: &Path) -> Result<Self> {
+        let mut refs = Self {
+            remotes: run(repo, &["remote"])?.lines().map(str::to_owned).collect(),
+            ..Self::default()
+        };
+        let all = run(
+            repo,
+            &[
+                "for-each-ref",
+                "--format=%(refname)",
+                "refs/heads/",
+                "refs/remotes/",
+            ],
+        )?;
+        for line in all.lines() {
+            if let Some(head) = line.strip_prefix("refs/heads/") {
+                refs.heads.push(head.to_owned());
+            } else if let Some(remote) = line.strip_prefix("refs/remotes/") {
+                refs.remote_branches.push(remote.to_owned());
+            }
+        }
+        Ok(refs)
+    }
+
+    /// `remote/name` when one of the remotes, `origin` first, has a fetched branch `name`.
+    #[must_use]
+    pub fn remote_branch(&self, name: &str) -> Option<String> {
+        let mut found: Vec<&String> = self
+            .remote_branches
             .iter()
-            .filter(|remote| full.starts_with(remote.as_str()))
-            .filter_map(|remote| full[remote.len()..].strip_prefix('/'))
-            .min_by_key(|branch| branch.len())
-            .map(str::to_owned)
-    };
-    let mut found: Vec<String> = refs_under(repo, "refs/remotes/")?
-        .into_iter()
-        .filter(|full| branch_of(full).as_deref() == Some(name))
-        .collect();
-    found.sort_by_key(|full| !full.starts_with("origin/"));
-    Ok(found.into_iter().next())
+            .filter(|full| split_remote(&self.remotes, full).is_some_and(|(_, b)| b == name))
+            .collect();
+        found.sort_by_key(|full| !full.starts_with("origin/"));
+        found.first().map(|full| (*full).clone())
+    }
+
+    /// A branch whose ref stops git from making branch `name`: `name` itself, or a branch
+    /// it would nest under or over, since `jb` blocks `jb/a` and `jb/a` blocks `jb`.
+    /// `except` is left out, as git lets a rename replace its own old name.
+    #[must_use]
+    pub fn clashing_branch(&self, name: &str, except: Option<&str>) -> Option<String> {
+        self.heads
+            .iter()
+            .filter(|branch| Some(branch.as_str()) != except)
+            .filter(|branch| branches_clash(branch, name))
+            // The name itself first, so an existing branch reads as one.
+            .max_by_key(|branch| *branch == name)
+            .cloned()
+    }
 }
 
-/// A branch whose ref stops git from making branch `name`: `name` itself, or a branch it
-/// would nest under or over, since `jb` blocks `jb/a` and `jb/a` blocks `jb`. `except` is
-/// left out, as git lets a rename replace its own old name.
-///
-/// # Errors
-///
-/// Fails when git fails.
-pub fn clashing_branch(repo: &Path, name: &str, except: Option<&str>) -> Result<Option<String>> {
-    Ok(refs_under(repo, "refs/heads/")?
-        .into_iter()
-        .filter(|branch| Some(branch.as_str()) != except)
-        .filter(|branch| branches_clash(branch, name))
-        // The name itself first, so an existing branch reads as one.
-        .max_by_key(|branch| branch == name))
+/// `full`, like `origin/main`, split into one of `remotes` and its branch. With remotes `a`
+/// and `a/b`, `a/b/x` is branch `x` of `a/b`, not `b/x` of `a`.
+#[must_use]
+pub fn split_remote<'a>(remotes: &'a [String], full: &'a str) -> Option<(&'a str, &'a str)> {
+    let full = full.strip_prefix("refs/remotes/").unwrap_or(full);
+    remotes
+        .iter()
+        .filter_map(|remote| {
+            let branch = full.strip_prefix(remote.as_str())?.strip_prefix('/')?;
+            Some((remote.as_str(), branch))
+        })
+        .max_by_key(|(remote, _)| remote.len())
 }
 
 /// Whether branches `a` and `b` cannot both exist: they are the same, or one would nest
@@ -141,16 +174,6 @@ pub fn branches_clash(a: &str, b: &str) -> bool {
             .is_some_and(|rest| rest.starts_with('/'))
     };
     a == b || nested(a, b) || nested(b, a)
-}
-
-/// The refs under `prefix`, like `refs/heads/`, named relative to it.
-fn refs_under(repo: &Path, prefix: &str) -> Result<Vec<String>> {
-    let refs = run(repo, &["for-each-ref", "--format=%(refname)", prefix])?;
-    Ok(refs
-        .lines()
-        .filter_map(|r| r.strip_prefix(prefix))
-        .map(str::to_owned)
-        .collect())
 }
 
 /// # Errors
