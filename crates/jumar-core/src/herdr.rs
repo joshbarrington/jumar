@@ -141,7 +141,9 @@ impl Herdr {
     /// # Errors
     ///
     /// Fails when herdr refuses.
-    pub fn open_popup(&self, plugin: &str, entrypoint: &str) -> Result<()> {
+    pub fn open_popup(&self, plugin: &str, entrypoint: &str, cwd: &Path) -> Result<()> {
+        let env = format!("{HERDR_POPUP_ENV}=1");
+        let cwd = cwd.to_string_lossy();
         let args = [
             "plugin",
             "pane",
@@ -152,8 +154,10 @@ impl Herdr {
             entrypoint,
             "--placement",
             "popup",
+            "--cwd",
+            &cwd,
             "--env",
-            &format!("{HERDR_POPUP_ENV}=1"),
+            &env,
         ];
         self.call(&args).map(drop)
     }
