@@ -298,16 +298,56 @@ fn prepare_create_should_check_out_existing_branch() {
 fn prepare_create_should_place_worktree_with_source_template() {
     let fx = Fixture::new();
 
-    let create = fx.create("app/fix", None).unwrap();
+    let create = fx.create("app:fix", None).unwrap();
 
     assert_eq!(create.path, fx.repo().join(".claude/worktrees/fix"));
 }
 
 #[test]
 fn prepare_create_should_block_unknown_repo() {
-    let blocked = Fixture::new().create("nope/fix", None).unwrap_err();
+    let blocked = Fixture::new().create("nope:fix", None).unwrap_err();
 
     assert_eq!(blocked.reason, "no known repo named `nope`");
+}
+
+#[test]
+fn prepare_create_should_put_a_slashed_branch_in_a_cleaned_directory() {
+    let fx = Fixture::new();
+
+    let create = fx.create("app:jb/fix", None).unwrap();
+
+    assert_eq!(create.branch, "jb/fix");
+    assert_eq!(create.path, fx.repo().join(".claude/worktrees/jb-fix"));
+}
+
+#[test]
+fn prepare_create_should_read_a_slashed_name_as_a_branch() {
+    let create = Fixture::new().create("feature/login", None).unwrap();
+
+    assert_eq!(create.branch, "feature/login");
+}
+
+#[test]
+fn prepare_create_should_point_old_repo_syntax_at_the_colon() {
+    let blocked = Fixture::new().create("app/fix", None).unwrap_err();
+
+    assert_eq!(
+        blocked.reason,
+        "`app` is a repo; write `app:fix` to create there"
+    );
+}
+
+#[test]
+fn execute_create_should_check_out_an_existing_slashed_branch() {
+    let fx = Fixture::new();
+    git(&fx.repo(), &["branch", "alice/spike"]);
+    let create = fx.create("alice/spike", None).unwrap();
+    let path = create.path.clone();
+
+    apply::execute(&Step::Create(create), &Herdr::new()).unwrap();
+
+    let branch = git::run(&path, &["branch", "--show-current"]).unwrap();
+    assert_eq!(branch.trim(), "alice/spike");
 }
 
 #[test]

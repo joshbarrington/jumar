@@ -84,10 +84,10 @@ pub fn plan(original: &[Worktree], lines: &[Line]) -> Result<Vec<Operation>, Vec
                     continue;
                 }
                 let name = name.trim();
-                if Some(name) == dir_name(&worktree.path) {
+                if Some(dir_name_for(name).as_str()) == dir_name(&worktree.path) {
                     continue;
                 }
-                if !is_valid_dir_name(name) {
+                if !is_valid_dir_name(&dir_name_for(name)) {
                     errors.push(PlanError::InvalidName {
                         line: line_no,
                         name: name.to_owned(),
@@ -129,15 +129,15 @@ pub fn plan(original: &[Worktree], lines: &[Line]) -> Result<Vec<Operation>, Vec
         .map(|id| Operation::Remove { id })
         .collect();
     for (line, id, worktree, name) in moves {
-        let to = worktree.path.with_file_name(name);
+        let to = worktree.path.with_file_name(dir_name_for(name));
         if !taken.insert(to.clone()) {
             errors.push(PlanError::Collision { line, path: to });
             continue;
         }
+        let matched =
+            |branch: &str| Some(dir_name_for(branch).as_str()) == dir_name(&worktree.path);
         let rename_branch = match &worktree.head {
-            Some(Head::Branch(branch)) if Some(branch.as_str()) == dir_name(&worktree.path) => {
-                Some(name.to_owned())
-            }
+            Some(Head::Branch(branch)) if matched(branch) => Some(name.to_owned()),
             _ => None,
         };
         operations.push(Operation::Move {
@@ -179,6 +179,13 @@ fn existing_id(original: &[Worktree], line: &Line) -> Option<EntryId> {
 
 fn dir_name(path: &Path) -> Option<&str> {
     path.file_name()?.to_str()
+}
+
+/// The directory for branch `name`: `jb/fix` lives in `jb-fix`, so every worktree stays
+/// one directory deep.
+#[must_use]
+pub fn dir_name_for(name: &str) -> String {
+    name.replace('/', "-")
 }
 
 fn is_valid_dir_name(name: &str) -> bool {
@@ -276,12 +283,12 @@ mod tests {
     #[test]
     fn plan_should_create_from_new_line() {
         let mut lines = unchanged();
-        lines.push(Line::New("app/fix".into()));
+        lines.push(Line::New("app:fix".into()));
 
         let ops = plan(&original(), &lines).unwrap();
 
         let expected = Operation::Create {
-            target: "app/fix".into(),
+            target: "app:fix".into(),
             base: None,
             near: Some(EntryId(1)),
         };
@@ -388,14 +395,45 @@ mod tests {
     }
 
     #[test]
-    fn plan_should_reject_name_with_slash() {
-        let errors = plan(&original(), &[keep(0, "x/y"), keep(1, "b")]).unwrap_err();
+    fn plan_should_move_name_with_slash_into_cleaned_directory() {
+        let ops = plan(&original(), &[keep(0, "jb/a"), keep(1, "b")]).unwrap();
+
+        let expected = Operation::Move {
+            id: EntryId(0),
+            to: PathBuf::from("/w/jb-a"),
+            rename_branch: Some("jb/a".into()),
+        };
+        assert_eq!(ops, [expected]);
+    }
+
+    #[test]
+    fn plan_should_rename_branch_whose_cleaned_name_matched_directory() {
+        let original = vec![worktree("/w/jb-a", "jb/a")];
+
+        let ops = plan(&original, &[keep(0, "jb/a2")]).unwrap();
+
+        assert!(matches!(
+            &ops[0],
+            Operation::Move { rename_branch: Some(b), .. } if b == "jb/a2"
+        ));
+    }
+
+    #[test]
+    fn plan_should_leave_worktree_when_name_cleans_to_its_directory() {
+        let original = vec![worktree("/w/jb-a", "jb/a")];
+
+        assert_eq!(plan(&original, &[keep(0, "jb/a")]), Ok(vec![]));
+    }
+
+    #[test]
+    fn plan_should_reject_dot_dot_name() {
+        let errors = plan(&original(), &[keep(0, ".."), keep(1, "b")]).unwrap_err();
 
         assert_eq!(
             errors,
             [PlanError::InvalidName {
                 line: 1,
-                name: "x/y".into(),
+                name: "..".into(),
             }]
         );
     }
@@ -446,7 +484,7 @@ mod tests {
 
     #[test]
     fn plan_should_report_every_invalid_line() {
-        let lines = [keep(0, "x/y"), keep(1, ""), Line::New("@b".into())];
+        let lines = [keep(0, ".."), keep(1, ""), Line::New("@b".into())];
 
         let errors = plan(&original(), &lines).unwrap_err();
 

@@ -16,7 +16,7 @@ const SECTIONS: [(&str, &[(&str, &str)]); 4] = [
             ("cw", "rename it"),
             (
                 "o O",
-                "create one: name, repo/name, name@base or #123 for a PR",
+                "create one: name, repo:name, name@base or #123 for a PR",
             ),
         ],
     ),

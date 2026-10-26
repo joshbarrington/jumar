@@ -10,7 +10,7 @@ use crate::git;
 use crate::herdr::{self, Herdr};
 use crate::inspect;
 use crate::model::{Head, Health, Worktree};
-use crate::plan::{EntryId, Operation};
+use crate::plan::{self, EntryId, Operation};
 use crate::safety::Tier;
 use crate::{Error, Result};
 
@@ -215,21 +215,27 @@ fn create(
     let (name, pull) = pull_request(name, base)?;
     let name = name.as_str();
     let base = base.filter(|_| pull.is_none());
-    if name.contains('/') {
-        return Err("a name cannot contain `/`; write repo/name".into());
+    // `app/fix` meant repo `app` before `:` took over.
+    if repo_name.is_none()
+        && let Some((prefix, rest)) = name.split_once('/')
+        && find_repo(context.worktrees, prefix).is_ok()
+    {
+        return Err(format!(
+            "`{prefix}` is a repo; write `{prefix}:{rest}` to create there"
+        ));
     }
     let repo = match repo_name {
         Some(repo_name) => find_repo(context.worktrees, repo_name)?,
         None => near
             .map(|id| context.worktrees[id.0].repo.clone())
-            .ok_or("no repo to create in; write repo/name")?,
+            .ok_or("no repo to create in; write repo:name")?,
     };
     let source = create_source(context, near)?;
     let template = source
         .create_path
         .as_deref()
         .ok_or_else(|| format!("source `{}` cannot create worktrees", source.name))?;
-    let path = expand_template(template, &repo, name, context.home);
+    let path = expand_template(template, &repo, &plan::dir_name_for(name), context.home);
     if path.exists() {
         return Err(format!("{} already exists", path.display()));
     }
@@ -371,8 +377,9 @@ fn matching_files(repo: &Path, patterns: &[String]) -> Result<Vec<PathBuf>, Stri
     Ok(files)
 }
 
+/// `repo:name`; git forbids `:` in branch names, so the split is never ambiguous.
 fn split_target(target: &str) -> (Option<&str>, &str) {
-    match target.split_once('/') {
+    match target.split_once(':') {
         Some((repo, name)) => (Some(repo), name),
         None => (None, target),
     }
@@ -670,8 +677,8 @@ mod tests {
     }
 
     #[test]
-    fn split_target_should_take_repo_before_slash() {
-        assert_eq!(split_target("app/fix"), (Some("app"), "fix"));
+    fn split_target_should_take_repo_before_colon() {
+        assert_eq!(split_target("app:jb/fix"), (Some("app"), "jb/fix"));
     }
 
     #[test]

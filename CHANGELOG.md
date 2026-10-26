@@ -5,6 +5,9 @@
 - A new line that names a branch on the remote only, such as `fix` for `origin/fix`, now
   makes a local branch that tracks it, instead of a new branch from the default branch.
 - An unknown start, such as `fix@nope`, is blocked on the confirm screen.
+- Branch names can contain `/`, such as `jb/fix`. The directory gets `-` instead, so it is
+  `jb-fix`.
+- **Breaking:** write `app:fix`, not `app/fix`, to create a worktree in another repo.
 
 ## 0.1.0
 

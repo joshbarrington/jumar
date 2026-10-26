@@ -126,8 +126,10 @@ green, jumar keeps it and tells you.
 
 ### Rename
 
-A rename moves the directory. If the branch had the same name, the branch is renamed too. You
-cannot rename a worktree while a herdr agent runs in it.
+A rename moves the directory. If the branch had the same name, the branch is renamed too. A
+`/` in a name becomes `-` in the directory, so the branch `jb/fix` lives in `jb-fix`, and
+renaming that line to `jb/fix2` renames both. You cannot rename a worktree while a herdr agent
+runs in it.
 
 ### Create
 
@@ -136,13 +138,16 @@ Type one of these on a new line:
 | Line | Creates |
 |---|---|
 | `fix` | branch `fix` from the default branch of the repo |
-| `app/fix` | the same, in the repo `app` |
+| `app:fix` | the same, in the repo `app` |
+| `jb/fix` | branch `jb/fix`, in the directory `jb-fix` |
 | `fix@v2` | branch `fix` from `v2` |
 | `fix`, when branch `fix` exists | a worktree for the existing branch |
 | `fix`, when only `origin/fix` exists | branch `fix` that tracks `origin/fix` |
 | `#123` | pull request 123, as branch `pr-123` |
 | `review@#123` | pull request 123, as branch `review` |
 
+- `app/fix` is the branch `app/fix`. If you have a repo named `app`, jumar asks you to write
+  `app:fix` or a different name.
 - jumar blocks a start that is not a branch, tag or commit before it changes anything. A
   remote branch that is not fetched yet, such as `origin/new`, is allowed.
 - If the start is a remote branch, such as `origin/main`, jumar fetches it first. If the fetch
@@ -208,6 +213,7 @@ mode = "suspend"    # suspend | herdr-workspace | detach
 - A source with the name `claude` or `herdr` changes that preset. Its globs replace the preset
   globs, and empty globs turn the preset off.
 - `create_path` can use `{repo}` (the path of the main checkout), `{repo_name}` and `{name}`.
+  `{name}` is the branch name with each `/` changed to `-`.
 
 ### Tools
 
