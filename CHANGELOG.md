@@ -12,6 +12,8 @@
   shows what it will create, or why it can't.
 - `o` and `O` create in the repo of the line under the cursor, and the new line shows under
   that repo. Before, `O` on a repo's first line used the repo above it.
+- `~/code/app:fix` creates a worktree in the repo at that path, so you can create one even
+  when jumar lists no repos.
 - **Breaking:** write `app:fix`, not `app/fix`, to create a worktree in another repo.
 
 ## 0.1.0

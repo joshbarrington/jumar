@@ -531,6 +531,50 @@ fn prepare_create_should_block_unknown_repo() {
     assert_eq!(blocked.reason, "no known repo named `nope`");
 }
 
+fn create_alone(fx: &Fixture, text: &str) -> Result<Step, Blocked> {
+    fx.prepare(Operation::Create {
+        target: plan::parse_target(text).unwrap(),
+        near: None,
+    })
+}
+
+#[test]
+fn prepare_create_should_take_a_repo_by_path_when_none_is_listed() {
+    let fx = Fixture::new();
+    init_repo(&fx.home.join("other"));
+
+    let Ok(Step::Create(create)) = create_alone(&fx, "~/other:fix") else {
+        panic!("expected a create");
+    };
+
+    assert_eq!(
+        (create.repo, create.path),
+        (
+            fx.home.join("other"),
+            fx.home.join("other/.claude/worktrees/fix")
+        )
+    );
+}
+
+#[test]
+fn prepare_create_should_block_a_path_outside_any_repo() {
+    let fx = Fixture::new();
+
+    let blocked = create_alone(&fx, "~/nowhere:fix").unwrap_err();
+
+    assert_eq!(blocked.reason, "~/nowhere is not a git repo");
+}
+
+#[test]
+fn prepare_create_should_ask_for_a_repo_path_when_the_line_has_no_repo() {
+    let blocked = create_alone(&Fixture::new(), "fix").unwrap_err();
+
+    assert_eq!(
+        blocked.reason,
+        "no repo to create in; write its path first, like ~/code/app:feat"
+    );
+}
+
 #[test]
 fn prepare_create_should_put_a_slashed_branch_in_a_cleaned_directory() {
     let fx = Fixture::new();

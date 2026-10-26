@@ -111,10 +111,16 @@ pub struct Repo {
 
 impl Repo {
     fn expanded_path(&self, home: &Path) -> PathBuf {
-        match self.path.strip_prefix('~') {
-            Some(rest) => home.join(rest.trim_start_matches('/')),
-            None => PathBuf::from(&self.path),
-        }
+        expand_home(&self.path, home)
+    }
+}
+
+/// `path` with a leading `~` replaced by `home`.
+#[must_use]
+pub fn expand_home(path: &str, home: &Path) -> PathBuf {
+    match path.strip_prefix('~') {
+        Some(rest) => home.join(rest.trim_start_matches('/')),
+        None => PathBuf::from(path),
     }
 }
 

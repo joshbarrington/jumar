@@ -5,13 +5,13 @@ use std::process::{Command, Output, Stdio};
 use std::sync::mpsc::{self, Receiver};
 use std::thread;
 
-use crate::config::{Config, Source};
+use crate::config::{self, Config, Source};
 use crate::discovery;
 use crate::git;
 use crate::herdr::{self, Herdr};
 use crate::inspect;
 use crate::model::{Head, Health, Worktree};
-use crate::plan::{EntryId, Operation, Target};
+use crate::plan::{self, EntryId, Operation, Target};
 use crate::safety::Tier;
 use crate::{Error, Result};
 
@@ -303,10 +303,10 @@ fn remove(context: &Context, id: EntryId) -> Result<Step, String> {
 fn create(context: &Context, target: &Target, near: Option<EntryId>) -> Result<Create, String> {
     let name = target.name.as_str();
     let repo = match &target.repo {
-        Some(repo_name) => find_repo(context.worktrees, repo_name)?,
+        Some(repo) => find_repo(context, repo)?,
         None => near
             .map(|id| context.worktrees[id.0].repo.clone())
-            .ok_or("no repo to create in; write repo:name")?,
+            .ok_or("no repo to create in; write its path first, like ~/code/app:feat")?,
     };
     let source = create_source(context, near)?;
     let template = source
@@ -443,8 +443,13 @@ fn matching_files(repo: &Path, patterns: &[String]) -> Result<Vec<PathBuf>, Stri
     Ok(files)
 }
 
-fn find_repo(worktrees: &[Worktree], name: &str) -> Result<PathBuf, String> {
-    match discovery::repos_named(worktrees, name)[..] {
+fn find_repo(context: &Context, name: &str) -> Result<PathBuf, String> {
+    if plan::is_repo_path(name) {
+        let path = config::expand_home(name, context.home);
+        return discovery::repo_containing(&path)
+            .ok_or_else(|| format!("{name} is not a git repo"));
+    }
+    match discovery::repos_named(context.worktrees, name)[..] {
         [repo] => Ok(repo.to_path_buf()),
         [] => Err(format!("no known repo named `{name}`")),
         _ => Err(format!("more than one repo is named `{name}`")),

@@ -112,6 +112,12 @@ pub enum TargetError {
     NamedPull,
 }
 
+/// Whether the part before `:` is a path rather than a repo's name, which has no `/`.
+#[must_use]
+pub fn is_repo_path(repo: &str) -> bool {
+    repo.contains('/') || repo.starts_with(['~', '.'])
+}
+
 /// Parses a new line's text. Splits on the first `@`, then on spaces, then on the first
 /// `:`. git forbids spaces and `:` in branch names, but not `@`, so a branch such as
 /// `jb@fix` cannot be written here.

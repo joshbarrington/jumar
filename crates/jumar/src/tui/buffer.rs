@@ -242,7 +242,7 @@ impl Buffer {
                         branch_text: Some(rest),
                         branch: rest.to_owned(),
                         branch_style: Style::new().fg(theme::GREEN),
-                        hint: Some(new_line_hint(text)),
+                        hint: Some(new_line_hint(text, near.is_some())),
                         state: String::new(),
                         age: Span::raw(""),
                         source: "",
@@ -340,7 +340,7 @@ impl Buffer {
             .collect();
         if rows.is_empty() {
             let empty = if self.editor.filter().is_empty() {
-                "no worktrees found (o to create one)"
+                "no repos found (o, then ~/path/to/repo:branch to create a worktree)"
             } else {
                 "no worktrees match the filter"
             };
@@ -599,12 +599,20 @@ fn hint_line(row: &Row) -> Line<'static> {
 }
 
 /// What a new line will create, or why it can't.
-fn new_line_hint(text: &str) -> Span<'static> {
+/// `in_repo` is whether the line has a repo to fall back on when it names none.
+fn new_line_hint(text: &str, in_repo: bool) -> Span<'static> {
     if text.trim().is_empty() {
-        let help = "type a branch, or a directory then a branch · @start · #123 for a PR";
+        let help = if in_repo {
+            "type a branch, or a directory then a branch · @start · #123 for a PR"
+        } else {
+            "type a repo's path, then : and a branch, like ~/code/app:feat"
+        };
         return Span::raw(help).fg(theme::GRAY);
     }
     match plan::parse_target(text) {
+        Ok(target) if target.repo.is_none() && !in_repo => {
+            Span::raw("write the repo's path first, like ~/code/app:feat").fg(theme::RED)
+        }
         Ok(target) => {
             let start = match (target.pull, &target.base) {
                 (Some(n), _) => Some(format!("from PR #{n}")),
@@ -722,18 +730,32 @@ mod tests {
 
     #[test]
     fn new_line_hint_should_say_what_the_line_creates() {
-        let hint = new_line_hint("api:tui feat/x@main");
+        let hint = new_line_hint("api:tui feat/x@main", true);
 
         assert_eq!(hint.content, "dir tui · branch feat/x · from main · in api");
     }
 
     #[test]
     fn new_line_hint_should_say_why_a_line_cannot_be_read() {
-        let hint = new_line_hint("fix@");
+        let hint = new_line_hint("fix@", true);
 
         assert_eq!(
             hint.content,
             "write a start after `@`, or leave out the `@`"
+        );
+    }
+
+    #[test]
+    fn new_line_hint_should_ask_for_a_repo_path_when_no_repo_is_listed() {
+        let hints = ["", "feat", "~/code/app:feat"].map(|text| new_line_hint(text, false).content);
+
+        assert_eq!(
+            hints.each_ref().map(AsRef::as_ref),
+            [
+                "type a repo's path, then : and a branch, like ~/code/app:feat",
+                "write the repo's path first, like ~/code/app:feat",
+                "dir feat · branch feat · in ~/code/app",
+            ]
         );
     }
 

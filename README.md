@@ -154,6 +154,7 @@ what it will create, or why it can't:
 | `feat/tui` | branch `feat/tui`, in the directory `feat-tui` |
 | `tui feat/tui` | branch `feat/tui`, in the directory `tui` |
 | `app:fix` | branch `fix`, in the repo `app` |
+| `~/code/app:fix` | branch `fix`, in the repo at `~/code/app`, even if jumar doesn't list it |
 | `fix@v2` | branch `fix` from `v2` |
 | `fix`, when branch `fix` exists | a worktree for the existing branch |
 | `fix`, when only `origin/fix` exists | branch `fix` that tracks `origin/fix` |
@@ -161,6 +162,8 @@ what it will create, or why it can't:
 | `review@#123` | pull request 123, as branch `review` |
 
 - `app/fix` is always the branch `app/fix`, even if you have a repo named `app`.
+- Before `:`, text with a `/`, or that starts with `~` or `.`, is a path to a repo; anything
+  else is the name of a listed repo. If jumar lists no repos, press `o` and give a path.
 - jumar blocks a start that is not a branch, tag or commit before it changes anything. A
   remote branch that is not fetched yet, such as `origin/new`, is allowed when
   `fetch_on_create` is on. If its fetch fails, nothing is created.
