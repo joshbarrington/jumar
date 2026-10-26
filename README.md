@@ -133,7 +133,8 @@ runs in it.
 
 ### Create
 
-Type one of these on a new line:
+Press `o` or `O` on a worktree, then type one of these. The new worktree goes in the same repo
+and source as the line you pressed it on:
 
 | Line | Creates |
 |---|---|

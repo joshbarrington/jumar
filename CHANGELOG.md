@@ -7,6 +7,8 @@
 - An unknown start, such as `fix@nope`, is blocked on the confirm screen.
 - Branch names can contain `/`, such as `jb/fix`. The directory gets `-` instead, so it is
   `jb-fix`.
+- `o` and `O` create in the repo of the line under the cursor, and the new line shows under
+  that repo. Before, `O` on a repo's first line used the repo above it.
 - **Breaking:** write `app:fix`, not `app/fix`, to create a worktree in another repo.
 
 ## 0.1.0

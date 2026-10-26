@@ -240,7 +240,7 @@ impl Editor {
         let edited = self
             .lines
             .iter()
-            .filter(|line| !matches!(line, Line::New(text) if text.trim().is_empty()));
+            .filter(|line| !matches!(line, Line::New { text, .. } if text.trim().is_empty()));
         !edited.eq(&self.original)
     }
 
@@ -385,7 +385,7 @@ impl Editor {
             .into_iter()
             .filter_map(|row| match self.lines[row] {
                 Line::Existing { id, .. } => Some(id),
-                Line::New(_) => None,
+                Line::New { .. } => None,
             })
             .collect();
         (!ids.is_empty()).then_some(Action::Context(ids))
@@ -511,7 +511,7 @@ impl Editor {
     fn is_visible(&self, line: &Line) -> bool {
         match line {
             Line::Existing { id, .. } => !self.hidden.contains(id),
-            Line::New(_) => true,
+            Line::New { .. } => true,
         }
     }
 
@@ -744,13 +744,23 @@ impl Editor {
     }
 
     fn open_line(&mut self, below: bool) {
+        let near = self.current_row().and_then(|row| match &self.lines[row] {
+            Line::Existing { id, .. } => Some(*id),
+            Line::New { near, .. } => *near,
+        });
         let index = match self.current_row() {
             Some(row) if below => row + 1,
             Some(row) => row,
             None => self.lines.len(),
         };
         self.checkpoint();
-        self.lines.insert(index, Line::New(String::new()));
+        self.lines.insert(
+            index,
+            Line::New {
+                text: String::new(),
+                near,
+            },
+        );
         self.row = index;
         self.col = 0;
         self.mode = Mode::Insert;
@@ -784,14 +794,14 @@ impl Editor {
 pub fn text(line: &Line) -> &str {
     match line {
         Line::Existing { name, .. } => name,
-        Line::New(text) => text,
+        Line::New { text, .. } => text,
     }
 }
 
 fn text_mut(line: &mut Line) -> &mut String {
     match line {
         Line::Existing { name, .. } => name,
-        Line::New(text) => text,
+        Line::New { text, .. } => text,
     }
 }
 
@@ -1182,7 +1192,41 @@ mod tests {
 
         feed(&mut ed, "ofix<Esc>");
 
-        assert_eq!(ed.lines()[1], Line::New("fix".into()));
+        let expected = Line::New {
+            text: "fix".into(),
+            near: Some(EntryId(0)),
+        };
+        assert_eq!(ed.lines()[1], expected);
+    }
+
+    #[test]
+    fn capital_o_should_take_the_cursor_line_as_near() {
+        let mut ed = editor(&ABC);
+
+        feed(&mut ed, "jOz<Esc>");
+
+        assert!(matches!(
+            ed.lines()[1],
+            Line::New {
+                near: Some(EntryId(1)),
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn o_on_a_new_line_should_keep_its_near() {
+        let mut ed = editor(&ABC);
+
+        feed(&mut ed, "jOz<Esc>oy<Esc>");
+
+        assert!(matches!(
+            ed.lines()[2],
+            Line::New {
+                near: Some(EntryId(1)),
+                ..
+            }
+        ));
     }
 
     #[test]

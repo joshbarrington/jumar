@@ -14,7 +14,11 @@ pub enum Line {
         name: String,
     },
     /// Raw `target[@base]` text; the target is resolved to a repo and source on apply.
-    New(String),
+    New {
+        text: String,
+        /// The worktree the cursor was on when the line was opened.
+        near: Option<EntryId>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -98,7 +102,7 @@ pub fn plan(original: &[Worktree], lines: &[Line]) -> Result<Vec<Operation>, Vec
                     errors.push(PlanError::Unhealthy { line: line_no });
                 }
             }
-            Line::New(text) => {
+            Line::New { text, near: opened } => {
                 let text = text.trim();
                 if text.is_empty() {
                     continue;
@@ -113,7 +117,7 @@ pub fn plan(original: &[Worktree], lines: &[Line]) -> Result<Vec<Operation>, Vec
                     creates.push(Operation::Create {
                         target: target.to_owned(),
                         base,
-                        near,
+                        near: opened.or(near),
                     });
                 }
             }
@@ -220,6 +224,13 @@ mod tests {
         }
     }
 
+    fn new(text: &str) -> Line {
+        Line::New {
+            text: text.into(),
+            near: None,
+        }
+    }
+
     fn unchanged() -> Vec<Line> {
         vec![keep(0, "a"), keep(1, "b")]
     }
@@ -283,7 +294,7 @@ mod tests {
     #[test]
     fn plan_should_create_from_new_line() {
         let mut lines = unchanged();
-        lines.push(Line::New("app:fix".into()));
+        lines.push(new("app:fix"));
 
         let ops = plan(&original(), &lines).unwrap();
 
@@ -297,7 +308,7 @@ mod tests {
 
     #[test]
     fn plan_should_take_context_from_line_above_new_line() {
-        let lines = [keep(0, "a"), Line::New("x".into()), keep(1, "b")];
+        let lines = [keep(0, "a"), new("x"), keep(1, "b")];
 
         let ops = plan(&original(), &lines).unwrap();
 
@@ -311,8 +322,27 @@ mod tests {
     }
 
     #[test]
+    fn plan_should_take_context_from_the_line_it_was_opened_on() {
+        let opened = Line::New {
+            text: "x".into(),
+            near: Some(EntryId(1)),
+        };
+        let lines = [keep(0, "a"), opened, keep(1, "b")];
+
+        let ops = plan(&original(), &lines).unwrap();
+
+        assert!(matches!(
+            &ops[0],
+            Operation::Create {
+                near: Some(EntryId(1)),
+                ..
+            }
+        ));
+    }
+
+    #[test]
     fn plan_should_take_context_from_line_below_when_new_line_is_first() {
-        let lines = [Line::New("x".into()), keep(1, "b"), keep(0, "a")];
+        let lines = [new("x"), keep(1, "b"), keep(0, "a")];
 
         let ops = plan(&original(), &lines).unwrap();
 
@@ -327,7 +357,7 @@ mod tests {
 
     #[test]
     fn plan_should_have_no_context_when_buffer_has_no_existing_lines() {
-        let ops = plan(&[], &[Line::New("x".into())]).unwrap();
+        let ops = plan(&[], &[new("x")]).unwrap();
 
         assert!(matches!(&ops[0], Operation::Create { near: None, .. }));
     }
@@ -335,7 +365,7 @@ mod tests {
     #[test]
     fn plan_should_split_base_from_new_line() {
         let mut lines = unchanged();
-        lines.push(Line::New("fix@dev".into()));
+        lines.push(new("fix@dev"));
 
         let ops = plan(&original(), &lines).unwrap();
 
@@ -345,14 +375,14 @@ mod tests {
     #[test]
     fn plan_should_ignore_blank_new_lines() {
         let mut lines = unchanged();
-        lines.push(Line::New("  ".into()));
+        lines.push(new("  "));
 
         assert_eq!(plan(&original(), &lines), Ok(vec![]));
     }
 
     #[test]
     fn plan_should_order_removes_then_moves_then_creates() {
-        let lines = [Line::New("c".into()), keep(1, "b2")];
+        let lines = [new("c"), keep(1, "b2")];
 
         let ops = plan(&original(), &lines).unwrap();
 
@@ -475,7 +505,7 @@ mod tests {
     #[test]
     fn plan_should_reject_new_line_without_target() {
         let mut lines = unchanged();
-        lines.push(Line::New("@dev".into()));
+        lines.push(new("@dev"));
 
         let errors = plan(&original(), &lines).unwrap_err();
 
@@ -484,7 +514,7 @@ mod tests {
 
     #[test]
     fn plan_should_report_every_invalid_line() {
-        let lines = [keep(0, ".."), keep(1, ""), Line::New("@b".into())];
+        let lines = [keep(0, ".."), keep(1, ""), new("@b")];
 
         let errors = plan(&original(), &lines).unwrap_err();
 

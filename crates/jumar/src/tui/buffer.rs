@@ -210,8 +210,8 @@ impl Buffer {
                         },
                     }
                 }
-                BufferLine::New(text) => Row {
-                    repo: None,
+                BufferLine::New { text, near } => Row {
+                    repo: near.map(|id| self.worktrees[id.0].repo.as_path()),
                     mark: Span::raw("+").fg(theme::GREEN),
                     name: text,
                     branch: String::new(),
