@@ -376,12 +376,12 @@ fn details(item: &Item, home: &Path) -> Vec<Line<'static>> {
                 None => format!("stays at {}", format::tilde(&step.worktree.path, home)),
             };
             lines.push(field("folder", folder));
-            lines.push(field(
+            lines.push(spans_field(
                 "branch",
                 match (&step.rename_branch, step.worktree.head.as_ref()) {
-                    (Some(new), _) => format!("renamed to {new}"),
-                    (None, Some(Head::Branch(name))) => format!("{name}, unchanged"),
-                    (None, _) => "none, the checkout is detached".into(),
+                    (Some(new), _) => vec![Span::raw("renamed to "), code(new)],
+                    (None, Some(Head::Branch(name))) => vec![code(name), Span::raw(", unchanged")],
+                    (None, _) => vec![Span::raw("none, the checkout is detached")],
                 },
             ));
             if let Some(workspace) = &step.workspace {
@@ -400,30 +400,33 @@ fn details(item: &Item, home: &Path) -> Vec<Line<'static>> {
                     create.source
                 ),
             ));
-            lines.push(field(
+            let branch = code(&create.branch);
+            lines.push(spans_field(
                 "branch",
                 match &create.start {
-                    Start::Existing => format!("checks out existing {}", create.branch),
+                    Start::Existing => vec![Span::raw("checks out "), branch],
                     Start::From(_)
                         if let Some(fetch) = &create.fetch
                             && let Some(number) = fetch.pull =>
                     {
-                        format!(
-                            "new {} from PR #{number} on {}, fetched first",
-                            create.branch, fetch.remote
-                        )
+                        vec![
+                            branch,
+                            Span::raw(format!(
+                                " from PR #{number} on {}, fetched first",
+                                fetch.remote
+                            )),
+                        ]
                     }
                     Start::From(rev) | Start::Tracking(rev) => {
                         let how = match create.start {
-                            Start::Tracking(_) => "tracking",
-                            _ => "from",
+                            Start::Tracking(_) => " tracking ",
+                            _ => " from ",
                         };
-                        let fetched = if create.fetch.is_some() {
-                            ", fetched first"
-                        } else {
-                            ""
-                        };
-                        format!("new {} {how} {rev}{fetched}", create.branch)
+                        let mut spans = vec![branch, Span::raw(how), code(rev)];
+                        if create.fetch.is_some() {
+                            spans.push(Span::raw(", fetched first"));
+                        }
+                        spans
                     }
                 },
             ));
@@ -544,10 +547,18 @@ fn remove_details(remove: &apply::Remove, home: &Path) -> Vec<Line<'static>> {
 }
 
 fn field(label: &str, text: String) -> Line<'static> {
-    Line::from(vec![
-        Span::raw(format!("    {label:<8}  ")).fg(theme::GRAY),
-        Span::raw(text),
-    ])
+    spans_field(label, vec![Span::raw(text)])
+}
+
+fn spans_field(label: &str, text: Vec<Span<'static>>) -> Line<'static> {
+    let mut spans = vec![Span::raw(format!("    {label:<8}  ")).fg(theme::GRAY)];
+    spans.extend(text);
+    Line::from(spans)
+}
+
+/// A branch or revision, set off like inline code.
+fn code(text: &str) -> Span<'static> {
+    Span::raw(format!(" {text} ")).fg(theme::TAN).bg(theme::BG1)
 }
 
 /// A toggle on the selected item: its box, the key that flips it, and what it does.
