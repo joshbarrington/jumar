@@ -9,6 +9,9 @@ updates:
         patterns: ["*"]
   - package-ecosystem: github-actions
     directory: /
+    # dist generates release.yml and fails the release if it differs; `dist init` updates it.
+    exclude-paths:
+      - .github/workflows/release.yml
     schedule:
       interval: weekly
     groups:
