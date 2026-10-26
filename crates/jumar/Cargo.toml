@@ -1,6 +1,6 @@
 [package]
 name = "jumar"
-description = "An oil.nvim-style editable buffer for managing git worktrees."
+description = "Manage git worktrees by editing them as a text buffer."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

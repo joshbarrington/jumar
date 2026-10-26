@@ -3,7 +3,7 @@ name = "jumar"
 version = "0.1.0"
 min_herdr_version = "0.9.3"
 platforms = ["macos", "linux"]
-description = "Manage git worktrees from an oil.nvim-style buffer in a floating pane."
+description = "Manage git worktrees by editing them as a text buffer, in a floating pane."
 
 # Install downloads this platform's release binary into bin/; `plugin link` skips it.
 [[build]]

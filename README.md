@@ -33,11 +33,25 @@ You need:
 
 ### Shell integration
 
-Add the shell function, so that Enter moves your shell into the worktree:
+Add the shell function, so that Enter moves your shell into the worktree. Run the command
+for your shell, then open a new shell.
+
+zsh:
 
 ```sh
-eval "$(jumar init zsh)"   # in ~/.zshrc, or bash in ~/.bashrc
-jumar init fish | source   # in ~/.config/fish/config.fish
+echo 'eval "$(jumar init zsh)"' >> ~/.zshrc
+```
+
+bash:
+
+```sh
+echo 'eval "$(jumar init bash)"' >> ~/.bashrc
+```
+
+fish:
+
+```sh
+echo 'jumar init fish | source' >> ~/.config/fish/config.fish
 ```
 
 Without the function, Enter prints the path.
@@ -54,7 +68,8 @@ worktree. The HERDR column shows the agent in each workspace: working, blocked, 
 ### Claude Code and other agents
 
 ```sh
-/plugin install jumar --marketplace joshbarrington/jumar
+/plugin marketplace add joshbarrington/jumar
+/plugin install jumar@jumar
 ```
 
 Ask Claude to "pick a worktree", and jumar opens over the session in herdr, tmux or WezTerm.
