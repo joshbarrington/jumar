@@ -380,7 +380,7 @@ fn matching_files(repo: &Path, patterns: &[String]) -> Result<Vec<PathBuf>, Stri
 /// `repo:name`; git forbids `:` in branch names, so the split is never ambiguous.
 fn split_target(target: &str) -> (Option<&str>, &str) {
     match target.split_once(':') {
-        Some((repo, name)) => (Some(repo), name),
+        Some((repo, name)) => (Some(repo.trim()), name.trim()),
         None => (None, target),
     }
 }
@@ -679,6 +679,11 @@ mod tests {
     #[test]
     fn split_target_should_take_repo_before_colon() {
         assert_eq!(split_target("app:jb/fix"), (Some("app"), "jb/fix"));
+    }
+
+    #[test]
+    fn split_target_should_trim_around_colon() {
+        assert_eq!(split_target("app : fix"), (Some("app"), "fix"));
     }
 
     #[test]

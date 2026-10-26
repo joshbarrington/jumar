@@ -54,6 +54,8 @@ pub enum PlanError {
     Collision { line: usize, path: PathBuf },
     #[error("line {line}: new worktree needs a name")]
     MissingTarget { line: usize },
+    #[error("line {line}: write a start after `@`, or leave out the `@`")]
+    MissingBase { line: usize },
 }
 
 /// Diffs the edited buffer against `original`. Operations come back in apply order:
@@ -113,6 +115,8 @@ pub fn plan(original: &[Worktree], lines: &[Line]) -> Result<Vec<Operation>, Vec
                 };
                 if target.is_empty() {
                     errors.push(PlanError::MissingTarget { line: line_no });
+                } else if base.as_deref() == Some("") {
+                    errors.push(PlanError::MissingBase { line: line_no });
                 } else {
                     creates.push(Operation::Create {
                         target: target.to_owned(),
@@ -169,7 +173,8 @@ impl PlanError {
             | Self::UnknownEntry { line }
             | Self::Unhealthy { line }
             | Self::Collision { line, .. }
-            | Self::MissingTarget { line } => *line,
+            | Self::MissingTarget { line }
+            | Self::MissingBase { line } => *line,
         }
     }
 }
@@ -510,6 +515,16 @@ mod tests {
         let errors = plan(&original(), &lines).unwrap_err();
 
         assert_eq!(errors, [PlanError::MissingTarget { line: 3 }]);
+    }
+
+    #[test]
+    fn plan_should_reject_new_line_with_empty_base() {
+        let mut lines = unchanged();
+        lines.push(new("fix @ "));
+
+        let errors = plan(&original(), &lines).unwrap_err();
+
+        assert_eq!(errors, [PlanError::MissingBase { line: 3 }]);
     }
 
     #[test]
