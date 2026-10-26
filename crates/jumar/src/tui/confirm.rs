@@ -313,16 +313,9 @@ fn heading(item: &Item, worktrees: &[Worktree], marker: Span<'static>) -> Line<'
             spans.push(Span::raw(label(&remove.worktree)).bold());
         }
         Ok(Step::Move(step)) => {
-            let only_branch = step.to == step.worktree.path;
-            spans.push(verb(
-                if only_branch { "RENAME" } else { "MOVE" },
-                theme::YELLOW,
-            ));
+            let (name, to) = move_subject(step.to.as_deref(), step.rename_branch.as_deref());
+            spans.push(verb(name, theme::YELLOW));
             spans.push(Span::raw("  "));
-            let to = match &step.rename_branch {
-                Some(new) if only_branch => new.clone(),
-                _ => format::file_name(&step.to),
-            };
             spans.push(Span::raw(format!("{} → {to}", label(&step.worktree))).bold());
         }
         Ok(Step::Create(create)) => {
@@ -340,10 +333,14 @@ fn heading(item: &Item, worktrees: &[Worktree], marker: Span<'static>) -> Line<'
         Err(blocked) => {
             let (name, subject) = match &blocked.operation {
                 Operation::Remove { id } => ("REMOVE", label(&worktrees[id.0])),
-                Operation::Move { id, to, .. } => (
-                    "MOVE",
-                    format!("{} → {}", label(&worktrees[id.0]), format::file_name(to)),
-                ),
+                Operation::Move {
+                    id,
+                    to,
+                    rename_branch,
+                } => {
+                    let (name, to) = move_subject(to.as_deref(), rename_branch.as_deref());
+                    (name, format!("{} → {to}", label(&worktrees[id.0])))
+                }
                 Operation::Create { target, .. } => ("CREATE", target.clone()),
             };
             spans.push(verb(name, theme::GRAY));
@@ -373,10 +370,9 @@ fn details(item: &Item, home: &Path) -> Vec<Line<'static>> {
     match item {
         Ok(Step::Remove(remove)) => return remove_details(remove, home),
         Ok(Step::Move(step)) => {
-            let folder = if step.to == step.worktree.path {
-                format!("stays at {}", format::tilde(&step.to, home))
-            } else {
-                format!("moves to {}", format::tilde(&step.to, home))
+            let folder = match &step.to {
+                Some(to) => format!("moves to {}", format::tilde(to, home)),
+                None => format!("stays at {}", format::tilde(&step.worktree.path, home)),
             };
             lines.push(field("folder", folder));
             lines.push(field(
@@ -575,6 +571,14 @@ fn option(checked: bool, key: char, text: String, note: &str, danger: bool) -> L
 /// A line under a heading in the apply report.
 fn detail(text: &str) -> Line<'static> {
     Line::from(format!("            {text}"))
+}
+
+/// The verb and new name of a move: its directory, or its branch when only that changes.
+fn move_subject(to: Option<&Path>, branch: Option<&str>) -> (&'static str, String) {
+    match to {
+        Some(to) => ("MOVE", format::file_name(to)),
+        None => ("RENAME", branch.unwrap_or_default().to_owned()),
+    }
 }
 
 fn verb(name: &'static str, color: Color) -> Span<'static> {

@@ -64,7 +64,8 @@ impl Remove {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Move {
     pub worktree: Worktree,
-    pub to: PathBuf,
+    /// `None` keeps the directory and only renames the branch.
+    pub to: Option<PathBuf>,
     pub rename_branch: Option<String>,
     /// herdr has no move, so its workspace is closed first and reopened at `to`.
     pub workspace: Option<String>,
@@ -132,23 +133,38 @@ pub struct Context<'a> {
 /// will happen.
 #[must_use]
 pub fn prepare(context: &Context, operations: Vec<Operation>) -> Vec<Result<Step, Blocked>> {
-    let mut claimed = Vec::new();
+    let mut paths = Vec::new();
+    let mut branches = Vec::new();
     operations
         .into_iter()
         .map(|operation| {
             let resolved = resolve(context, &operation).and_then(|step| {
                 // `jb/fix` and `jb-fix` share a directory, which only one line can have.
-                let path = match &step {
-                    Step::Move(step) => Some(&step.to),
-                    Step::Create(step) => Some(&step.path),
-                    Step::Remove(_) => None,
+                let (path, branch) = match &step {
+                    Step::Move(step) => (
+                        step.to.clone(),
+                        step.rename_branch
+                            .clone()
+                            .map(|b| (step.worktree.repo.clone(), b)),
+                    ),
+                    Step::Create(step) => (
+                        Some(step.path.clone()),
+                        Some((step.repo.clone(), step.branch.clone())),
+                    ),
+                    Step::Remove(_) => (None, None),
                 };
-                if let Some(path) = path {
-                    if claimed.contains(path) {
-                        return Err(format!("another line also uses {}", path.display()));
-                    }
-                    claimed.push(path.clone());
+                if let Some(path) = &path
+                    && paths.contains(path)
+                {
+                    return Err(format!("another line also uses {}", path.display()));
                 }
+                if let Some(branch) = &branch
+                    && branches.contains(branch)
+                {
+                    return Err(format!("another line also uses branch `{}`", branch.1));
+                }
+                paths.extend(path);
+                branches.extend(branch);
                 Ok(step)
             });
             resolved.map_err(|reason| Blocked { operation, reason })
@@ -165,22 +181,24 @@ fn resolve(context: &Context, operation: &Operation) -> Result<Step, String> {
             rename_branch,
         } => {
             let worktree = &context.worktrees[id.0];
-            if worktree.locked.is_some() {
+            // git only refuses to move a locked worktree; its branch can still be renamed.
+            if to.is_some() && worktree.locked.is_some() {
                 return Err("it is locked; run `git worktree unlock` to move it".into());
             }
-            // Renaming only the branch leaves the directory, and herdr's view of it, alone.
-            let workspace = workspace_for(context, worktree).filter(|_| *to != worktree.path);
+            // An agent could commit or push to the old branch name, so renaming it waits too.
+            let workspace = workspace_for(context, worktree);
             if workspace.is_some_and(|w| w.agents > 0) {
                 return Err("an agent is running in its herdr workspace".into());
             }
-            if let Some(new) = rename_branch {
-                check_rename(&worktree.repo, new)?;
+            if let (Some(new), Some(Head::Branch(old))) = (rename_branch, &worktree.head) {
+                check_new_branch(&worktree.repo, new, Some(old))?;
             }
             Ok(Step::Move(Move {
                 worktree: worktree.clone(),
                 to: to.clone(),
                 rename_branch: rename_branch.clone(),
-                workspace: workspace.map(|w| w.id.clone()),
+                // herdr only needs closing and reopening when the directory moves.
+                workspace: workspace.filter(|_| to.is_some()).map(|w| w.id.clone()),
             }))
         }
         Operation::Create { target, base, near } => {
@@ -189,17 +207,18 @@ fn resolve(context: &Context, operation: &Operation) -> Result<Step, String> {
     }
 }
 
-/// Checked before the directory moves, since a failed `git branch -m` would leave the move
-/// half done.
-fn check_rename(repo: &Path, branch: &str) -> Result<(), String> {
+/// Checked before anything runs, since a failed `git branch -m` would leave a move half
+/// done. `old` is the branch being renamed, which git lets the new name replace.
+fn check_new_branch(repo: &Path, branch: &str, old: Option<&str>) -> Result<(), String> {
     let git_err = |err: Error| err.to_string();
     if !git::is_valid_branch_name(repo, branch).map_err(git_err)? {
         return Err(format!("`{branch}` is not a valid branch name"));
     }
-    if git::branch_exists(repo, branch).map_err(git_err)? {
-        return Err(format!("branch `{branch}` already exists"));
+    match git::clashing_branch(repo, branch, old).map_err(git_err)? {
+        Some(clash) if clash == branch => Err(format!("branch `{branch}` already exists")),
+        Some(clash) => Err(format!("branch `{clash}` stops git from making `{branch}`")),
+        None => Ok(()),
     }
-    Ok(())
 }
 
 fn workspace_for<'a>(context: &Context<'a>, worktree: &Worktree) -> Option<&'a herdr::Workspace> {
@@ -256,7 +275,9 @@ fn create(
     // `app/fix` meant repo `app` before `:` took over.
     if repo_name.is_none()
         && let Some((prefix, rest)) = name.split_once('/')
-        && find_repo(context.worktrees, prefix).is_ok()
+        && discovery::repos(context.worktrees)
+            .iter()
+            .any(|repo| repo.file_name().is_some_and(|n| n == prefix))
     {
         return Err(format!(
             "`{prefix}` is a repo; write `{prefix}:{rest}` to create there"
@@ -283,7 +304,11 @@ fn create(
     }
     let remotes = git::remotes(&repo).map_err(git_err)?;
     let mut fetch = None;
-    let start = if git::branch_exists(&repo, name).map_err(git_err)? {
+    let exists = git::branch_exists(&repo, name).map_err(git_err)?;
+    if !exists {
+        check_new_branch(&repo, name, None)?;
+    }
+    let start = if exists {
         if base.is_some() || pull.is_some() {
             return Err(format!(
                 "branch `{name}` already exists; write just `{name}` to check it out"
@@ -299,7 +324,7 @@ fn create(
         && let Some(remote) = git::remote_branch(&repo, &remotes, name).map_err(git_err)?
     {
         if context.config.fetch_on_create() {
-            fetch = remote_branch(&remotes, &remote);
+            fetch = fetch_for(&remotes, &remote);
         }
         Start::Tracking(remote)
     } else {
@@ -309,7 +334,7 @@ fn create(
             None => default_base(context, &repo).map_err(git_err)?,
         };
         if context.config.fetch_on_create() {
-            fetch = remote_branch(&remotes, &base);
+            fetch = fetch_for(&remotes, &base);
         }
         // A remote branch not fetched yet only exists once its fetch runs.
         if explicit && fetch.is_none() && !git::is_commit(&repo, &base).map_err(git_err)? {
@@ -374,7 +399,7 @@ fn pull_fetch(repo: &Path, remotes: &[String], number: u32) -> Result<Fetch, Str
 }
 
 /// `base` as a branch of one of the repo's remotes, like `origin/main`.
-fn remote_branch(remotes: &[String], base: &str) -> Option<Fetch> {
+fn fetch_for(remotes: &[String], base: &str) -> Option<Fetch> {
     let base = base.strip_prefix("refs/remotes/").unwrap_or(base);
     remotes
         .iter()
@@ -544,15 +569,17 @@ fn execute_move(step: &Move, herdr: &Herdr) -> Result<()> {
     if let Some(workspace) = &step.workspace {
         herdr.close_workspace(workspace)?;
     }
-    if step.to != worktree.path {
-        let args = ["worktree", "move", utf8(&worktree.path)?, utf8(&step.to)?];
+    if let Some(to) = &step.to {
+        let args = ["worktree", "move", utf8(&worktree.path)?, utf8(to)?];
         git::run(&worktree.repo, &args)?;
     }
     if let (Some(new), Some(Head::Branch(old))) = (&step.rename_branch, &worktree.head) {
         git::run(&worktree.repo, &["branch", "-m", old, new])?;
     }
-    if step.workspace.is_some() {
-        herdr.open(&step.to, &worktree.repo, false)?;
+    if let Some(to) = &step.to
+        && step.workspace.is_some()
+    {
+        herdr.open(to, &worktree.repo, false)?;
     }
     Ok(())
 }

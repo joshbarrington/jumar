@@ -98,27 +98,61 @@ pub fn remotes(repo: &Path) -> Result<Vec<String>> {
 ///
 /// Fails when git fails.
 pub fn remote_branch(repo: &Path, remotes: &[String], name: &str) -> Result<Option<String>> {
-    let mut remotes: Vec<&str> = remotes.iter().map(String::as_str).collect();
-    remotes.sort_by_key(|remote| *remote != "origin");
-    for remote in remotes {
-        if ref_exists(repo, &format!("refs/remotes/{remote}/{name}"))? {
-            return Ok(Some(format!("{remote}/{name}")));
+    let mut candidates: Vec<&str> = remotes.iter().map(String::as_str).collect();
+    candidates.sort_by_key(|remote| *remote != "origin");
+    for remote in candidates {
+        let full = format!("{remote}/{name}");
+        // With remotes `a` and `a/b`, `a/b/x` is branch `x` of `a/b`, not `b/x` of `a`.
+        let longer = remotes
+            .iter()
+            .any(|other| other.len() > remote.len() && full.starts_with(&format!("{other}/")));
+        if !longer && ref_exists(repo, &format!("refs/remotes/{full}"))? {
+            return Ok(Some(full));
         }
     }
     Ok(None)
+}
+
+/// A branch whose ref stops git from making branch `name`: `name` itself, or a branch it
+/// would nest under or over, since `jb` blocks `jb/a` and `jb/a` blocks `jb`. `except` is
+/// left out, as git lets a rename replace its own old name.
+///
+/// # Errors
+///
+/// Fails when git fails.
+pub fn clashing_branch(repo: &Path, name: &str, except: Option<&str>) -> Result<Option<String>> {
+    let parents = name.match_indices('/').map(|(i, _)| &name[..i]);
+    for candidate in std::iter::once(name).chain(parents) {
+        if Some(candidate) != except && branch_exists(repo, candidate)? {
+            return Ok(Some(candidate.to_owned()));
+        }
+    }
+    let children = run(
+        repo,
+        &[
+            "for-each-ref",
+            "--format=%(refname:short)",
+            &format!("refs/heads/{name}/"),
+        ],
+    )?;
+    Ok(children
+        .lines()
+        .find(|child| Some(*child) != except)
+        .map(str::to_owned))
 }
 
 /// # Errors
 ///
 /// Fails when git cannot start.
 pub fn is_commit(repo: &Path, rev: &str) -> Result<bool> {
+    // No revision starts with `-`, and git would read it as an option.
+    if rev.starts_with('-') {
+        return Ok(false);
+    }
     let rev = format!("{rev}^{{commit}}");
-    Ok(spawn(
-        repo,
-        &["rev-parse", "--verify", "--quiet", "--end-of-options", &rev],
-    )?
-    .status
-    .success())
+    Ok(spawn(repo, &["rev-parse", "--verify", "--quiet", &rev])?
+        .status
+        .success())
 }
 
 fn ref_exists(repo: &Path, full_name: &str) -> Result<bool> {

@@ -182,7 +182,7 @@ fn prepare_should_block_moving_worktree_with_running_agent() {
     let blocked = fx
         .prepare(Operation::Move {
             id: EntryId(0),
-            to: fx.repo().join(".claude/worktrees/x"),
+            to: Some(fx.repo().join(".claude/worktrees/x")),
             rename_branch: None,
         })
         .unwrap_err();
@@ -198,7 +198,7 @@ fn prepare_should_reopen_moved_worktree_in_herdr() {
     let step = fx
         .prepare(Operation::Move {
             id: EntryId(0),
-            to: fx.repo().join(".claude/worktrees/x"),
+            to: Some(fx.repo().join(".claude/worktrees/x")),
             rename_branch: None,
         })
         .unwrap();
@@ -259,17 +259,18 @@ fn execute_remove_should_prune_worktree_whose_directory_is_gone() {
     assert_eq!(listed.len(), 2);
 }
 
-fn rename(fx: &Fixture, dir: &str, branch: &str) -> Result<Step, Blocked> {
+/// Renames worktree 0's branch, moving it to `dir` when one is given.
+fn rename(fx: &Fixture, dir: Option<&str>, branch: &str) -> Result<Step, Blocked> {
     fx.prepare(Operation::Move {
         id: EntryId(0),
-        to: fx.repo().join(".claude/worktrees").join(dir),
+        to: dir.map(|dir| fx.repo().join(".claude/worktrees").join(dir)),
         rename_branch: Some(branch.into()),
     })
 }
 
 #[test]
 fn prepare_move_should_block_an_invalid_new_branch_name() {
-    let blocked = rename(&Fixture::new(), "feat-", "feat/").unwrap_err();
+    let blocked = rename(&Fixture::new(), Some("feat-"), "feat/").unwrap_err();
 
     assert_eq!(blocked.reason, "`feat/` is not a valid branch name");
 }
@@ -279,7 +280,7 @@ fn prepare_move_should_block_renaming_onto_an_existing_branch() {
     let fx = Fixture::new();
     git(&fx.repo(), &["branch", "old"]);
 
-    let blocked = rename(&fx, "old", "old").unwrap_err();
+    let blocked = rename(&fx, Some("old"), "old").unwrap_err();
 
     assert_eq!(blocked.reason, "branch `old` already exists");
 }
@@ -287,13 +288,96 @@ fn prepare_move_should_block_renaming_onto_an_existing_branch() {
 #[test]
 fn execute_move_should_rename_only_the_branch_when_the_directory_stays() {
     let fx = Fixture::new();
-    let step = rename(&fx, "feat", "jb/feat").unwrap();
+    let step = rename(&fx, None, "jb/feat").unwrap();
 
     apply::execute(&step, &Herdr::new()).unwrap();
 
     let path = &fx.worktrees[0].path;
     let branch = git::run(path, &["branch", "--show-current"]).unwrap();
     assert_eq!(branch.trim(), "jb/feat");
+}
+
+#[test]
+fn prepare_move_should_block_a_branch_nested_under_an_existing_one() {
+    let fx = Fixture::new();
+    git(&fx.repo(), &["branch", "jb"]);
+
+    let blocked = rename(&fx, Some("jb-feat"), "jb/feat").unwrap_err();
+
+    assert_eq!(
+        blocked.reason,
+        "branch `jb` stops git from making `jb/feat`"
+    );
+}
+
+#[test]
+fn prepare_move_should_block_a_branch_that_existing_ones_nest_under() {
+    let fx = Fixture::new();
+    git(&fx.repo(), &["branch", "jb/x"]);
+
+    let blocked = rename(&fx, Some("jb"), "jb").unwrap_err();
+
+    assert_eq!(blocked.reason, "branch `jb/x` stops git from making `jb`");
+}
+
+#[test]
+fn execute_move_should_nest_a_branch_under_its_own_old_name() {
+    let fx = Fixture::new();
+    let step = rename(&fx, None, "feat/x").unwrap();
+
+    apply::execute(&step, &Herdr::new()).unwrap();
+
+    assert!(fx.has_branch("feat/x"));
+}
+
+#[test]
+fn prepare_create_should_block_a_branch_nested_under_an_existing_one() {
+    let fx = Fixture::new();
+    git(&fx.repo(), &["branch", "jb"]);
+
+    let blocked = fx.create("jb/fix", None).unwrap_err();
+
+    assert_eq!(blocked.reason, "branch `jb` stops git from making `jb/fix`");
+}
+
+#[test]
+fn prepare_should_block_a_second_line_using_the_same_branch() {
+    let fx = Fixture::new();
+    let operations = vec![
+        Operation::Move {
+            id: EntryId(0),
+            to: None,
+            rename_branch: Some("foo".into()),
+        },
+        Operation::Create {
+            target: "foo".into(),
+            base: None,
+            near: Some(EntryId(0)),
+        },
+    ];
+
+    let results = fx.prepare_all(operations);
+
+    assert_eq!(
+        results[1].as_ref().unwrap_err().reason,
+        "another line also uses branch `foo`"
+    );
+}
+
+#[test]
+fn prepare_move_should_block_a_branch_rename_while_an_agent_runs() {
+    let mut fx = Fixture::new();
+    fx.open_in_herdr(0, 1);
+
+    assert!(rename(&fx, None, "jb/feat").is_err());
+}
+
+#[test]
+fn prepare_move_should_rename_the_branch_of_a_locked_worktree() {
+    let mut fx = Fixture::new();
+    fx.worktrees[0].locked = Some(String::new());
+
+    assert!(rename(&fx, None, "jb/feat").is_ok());
 }
 
 #[test]
@@ -318,7 +402,7 @@ fn prepare_should_block_a_create_into_a_moved_worktree_directory() {
     let operations = vec![
         Operation::Move {
             id: EntryId(0),
-            to,
+            to: Some(to),
             rename_branch: None,
         },
         Operation::Create {
@@ -340,7 +424,7 @@ fn execute_move_should_rename_directory_and_branch() {
     let step = fx
         .prepare(Operation::Move {
             id: EntryId(0),
-            to: to.clone(),
+            to: Some(to.clone()),
             rename_branch: Some("feat2".into()),
         })
         .unwrap();
@@ -443,6 +527,22 @@ fn prepare_create_should_block_an_empty_name_after_the_colon() {
     let blocked = Fixture::new().create("app:", None).unwrap_err();
 
     assert_eq!(blocked.reason, "write a name after `:`");
+}
+
+#[test]
+fn prepare_create_should_point_old_syntax_at_the_colon_when_repo_names_repeat() {
+    let mut fx = Fixture::new();
+    let mut twin = fx.worktrees[0].clone();
+    twin.repo = fx.home.join("other/app");
+    fx.worktrees.push(twin);
+
+    let blocked = fx.create("app/fix", None).unwrap_err();
+
+    assert!(
+        blocked.reason.starts_with("`app` is a repo"),
+        "{}",
+        blocked.reason
+    );
 }
 
 #[test]
@@ -922,7 +1022,7 @@ fn execute_move_should_close_and_reopen_herdr_workspace() {
     let step = fx
         .prepare(Operation::Move {
             id: EntryId(0),
-            to: to.clone(),
+            to: Some(to.clone()),
             rename_branch: None,
         })
         .unwrap();
@@ -954,7 +1054,7 @@ fn prepare_should_block_moving_locked_worktree() {
 
     let blocked = fx.prepare(Operation::Move {
         id: EntryId(0),
-        to: fx.repo().join(".claude/worktrees/x"),
+        to: Some(fx.repo().join(".claude/worktrees/x")),
         rename_branch: None,
     });
 

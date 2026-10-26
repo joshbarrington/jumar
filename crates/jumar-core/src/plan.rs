@@ -28,7 +28,8 @@ pub enum Operation {
     },
     Move {
         id: EntryId,
-        to: PathBuf,
+        /// The new directory; `None` keeps it and only renames the branch.
+        to: Option<PathBuf>,
         rename_branch: Option<String>,
     },
     Create {
@@ -142,9 +143,15 @@ pub fn plan(original: &[Worktree], lines: &[Line]) -> Result<Vec<Operation>, Vec
         .map(|id| Operation::Remove { id })
         .collect();
     for (line, id, worktree, name) in moves {
-        let to = worktree.path.with_file_name(dir_name_for(name));
-        if to != worktree.path && !taken.insert(to.clone()) {
-            errors.push(PlanError::Collision { line, path: to });
+        let path = worktree.path.with_file_name(dir_name_for(name));
+        let to = (path != worktree.path).then_some(path);
+        if let Some(to) = &to
+            && !taken.insert(to.clone())
+        {
+            errors.push(PlanError::Collision {
+                line,
+                path: to.clone(),
+            });
             continue;
         }
         operations.push(Operation::Move {
@@ -281,7 +288,7 @@ mod tests {
 
         let expected = Operation::Move {
             id: EntryId(0),
-            to: PathBuf::from("/w/a2"),
+            to: Some(PathBuf::from("/w/a2")),
             rename_branch: Some("a2".into()),
         };
         assert_eq!(ops, [expected]);
@@ -447,7 +454,7 @@ mod tests {
 
         let expected = Operation::Move {
             id: EntryId(0),
-            to: PathBuf::from("/w/jb-a"),
+            to: Some(PathBuf::from("/w/jb-a")),
             rename_branch: Some("jb/a".into()),
         };
         assert_eq!(ops, [expected]);
@@ -473,7 +480,7 @@ mod tests {
 
         let expected = Operation::Move {
             id: EntryId(0),
-            to: PathBuf::from("/w/jb-a"),
+            to: None,
             rename_branch: Some("jb/a".into()),
         };
         assert_eq!(ops, [expected]);

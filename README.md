@@ -129,14 +129,17 @@ green, jumar keeps it and tells you.
 A rename moves the directory. If the branch had the same name, the branch is renamed too. A
 `/` in a name becomes `-` in the directory, so the branch `jb/fix` lives in `jb-fix`, and
 renaming that line to `jb/fix2` renames both. Renaming a `jb-fix` line on branch `jb-fix` to
-`jb/fix` renames only the branch. jumar blocks a new branch name that git does not allow or that
-already exists, before it moves anything. You cannot rename a worktree while a herdr agent
-runs in it.
+`jb/fix` renames only the branch, and works on a locked worktree too.
+
+Before it moves anything, jumar blocks a new branch name that git does not allow, that already
+exists, or that clashes with a branch it would nest under or over: `jb/fix` cannot exist next
+to `jb`. You cannot rename a worktree or its branch while a herdr agent runs in it.
 
 ### Create
 
 Press `o` or `O` on a worktree, then type one of these. The new worktree goes in the same repo
-and source as the line you pressed it on:
+and source as the line you pressed it on, unless the line names a repo with `repo:`. The new
+line shows under the repo it goes in:
 
 | Line | Creates |
 |---|---|
@@ -154,8 +157,8 @@ and source as the line you pressed it on:
 - jumar blocks a start that is not a branch, tag or commit before it changes anything. A
   remote branch that is not fetched yet, such as `origin/new`, is allowed when
   `fetch_on_create` is on. If its fetch fails, nothing is created.
-- Two lines cannot use the same directory. `jb/fix` and `jb-fix` both want `jb-fix`, so jumar
-  blocks the second.
+- Two lines cannot use the same directory or the same branch. `jb/fix` and `jb-fix` both want
+  the directory `jb-fix`, so jumar blocks the second.
 - If the start is a remote branch, such as `origin/main`, jumar fetches it first. If the fetch
   fails, the worktree starts from the last fetched commit, and the report tells you.
 - A pull request comes from the `upstream` remote if it exists, else from `origin`. jumar

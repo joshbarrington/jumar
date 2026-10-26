@@ -2,7 +2,7 @@
 
 mod common;
 
-use jumar_core::git::default_branches;
+use jumar_core::git::{self, default_branches};
 
 use common::{git, init_repo};
 
@@ -52,4 +52,27 @@ fn default_branches_should_be_empty_when_configured_branch_missing() {
             .unwrap()
             .is_empty()
     );
+}
+
+#[test]
+fn remote_branch_should_pick_the_longest_remote_a_ref_belongs_to() {
+    let dir = tempfile::tempdir().unwrap();
+    init_repo(dir.path());
+    git(dir.path(), &["update-ref", "refs/remotes/a/b/x", "HEAD"]);
+    let remotes = ["a".to_owned(), "a/b".to_owned()];
+
+    let found = (
+        git::remote_branch(dir.path(), &remotes, "b/x").unwrap(),
+        git::remote_branch(dir.path(), &remotes, "x").unwrap(),
+    );
+
+    assert_eq!(found, (None, Some("a/b/x".to_owned())));
+}
+
+#[test]
+fn is_commit_should_refuse_a_revision_that_looks_like_an_option() {
+    let dir = tempfile::tempdir().unwrap();
+    init_repo(dir.path());
+
+    assert!(!git::is_commit(dir.path(), "--all").unwrap());
 }

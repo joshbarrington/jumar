@@ -211,7 +211,7 @@ impl Buffer {
                     }
                 }
                 BufferLine::New { text, near } => Row {
-                    repo: near.map(|id| self.worktrees[id.0].repo.as_path()),
+                    repo: self.new_line_repo(text, *near),
                     mark: Span::raw("+").fg(theme::GREEN),
                     name: text,
                     branch: String::new(),
@@ -224,6 +224,22 @@ impl Buffer {
                 },
             })
             .collect()
+    }
+
+    /// The repo a new line goes in: the one it names as `repo:name`, else the one it was
+    /// opened on. A named repo jumar can't pin down gets no group, as its create is blocked.
+    fn new_line_repo(&self, text: &str, near: Option<EntryId>) -> Option<&Path> {
+        let target = text.split('@').next().unwrap_or_default();
+        let Some((name, _)) = target.split_once(':') else {
+            return near.map(|id| self.worktrees[id.0].repo.as_path());
+        };
+        let mut repos = self
+            .worktrees
+            .iter()
+            .map(|w| w.repo.as_path())
+            .filter(|repo| repo.file_name().is_some_and(|n| n == name.trim()));
+        let first = repos.next()?;
+        repos.all(|repo| repo == first).then_some(first)
     }
 
     fn herdr_marker(&self, worktree: &Worktree) -> Span<'static> {
@@ -573,5 +589,33 @@ mod tests {
                 assert!(drawn.is_ok(), "draw failed at {width}x{height}");
             }
         }
+    }
+
+    #[test]
+    fn new_line_repo_should_prefer_the_repo_the_line_names() {
+        let app = buffer().worktrees[0].clone();
+        let mut web = app.clone();
+        web.repo = PathBuf::from("/nonexistent/web");
+        let scan = Scan {
+            worktrees: vec![app, web],
+            warnings: Vec::new(),
+        };
+        let buffer = Buffer::new(scan, &[]);
+        let near = Some(EntryId(0));
+
+        let repos = [
+            buffer.new_line_repo("web:fix@main", near),
+            buffer.new_line_repo("fix", near),
+            buffer.new_line_repo("nope:fix", near),
+        ];
+
+        assert_eq!(
+            repos,
+            [
+                Some(Path::new("/nonexistent/web")),
+                Some(Path::new("/nonexistent/app")),
+                None
+            ]
+        );
     }
 }
