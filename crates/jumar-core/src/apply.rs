@@ -11,7 +11,7 @@ use crate::git;
 use crate::herdr::{self, Herdr};
 use crate::inspect;
 use crate::model::{Head, Health, Worktree};
-use crate::plan::{self, EntryId, Operation, Target};
+use crate::plan::{EntryId, Operation, Target};
 use crate::safety::Tier;
 use crate::{Error, Result};
 
@@ -296,7 +296,7 @@ fn create(context: &Context, target: &Target, near: Option<EntryId>) -> Result<C
         .create_path
         .as_deref()
         .ok_or_else(|| format!("source `{}` cannot create worktrees", source.name))?;
-    let path = expand_template(template, &repo, &plan::dir_name_for(name), context.home);
+    let path = expand_template(template, &repo, &target.dir, context.home);
     if path.exists() {
         return Err(format!("{} already exists", path.display()));
     }

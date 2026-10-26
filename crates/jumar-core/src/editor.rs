@@ -53,7 +53,8 @@ pub enum Action {
 /// matches, such as the repo and source.
 #[derive(Debug, Clone)]
 pub struct Entry {
-    pub name: String,
+    /// The line's starting text, `dir branch` as [`crate::plan::columns`] splits it.
+    pub text: String,
     pub keywords: String,
     /// Shown but not deletable or editable, like a repo's main checkout.
     pub fixed: bool,
@@ -111,7 +112,7 @@ impl Editor {
             fixed.push(entry.fixed);
             lines.push(Line::Existing {
                 id: EntryId(index),
-                name: entry.name,
+                text: entry.text,
             });
         }
         Self {
@@ -495,8 +496,8 @@ impl Editor {
             .lines
             .iter()
             .filter_map(|line| match line {
-                Line::Existing { id, name }
-                    if !name.to_lowercase().contains(&needle)
+                Line::Existing { id, text }
+                    if !text.to_lowercase().contains(&needle)
                         && !self.keywords[id.0].contains(&needle) =>
                 {
                     Some(*id)
@@ -789,19 +790,17 @@ impl Editor {
     }
 }
 
-/// The editable text of a line: the directory name, or the raw new-line text.
+/// The editable text of a line: `dir branch`, or the raw new-line text.
 #[must_use]
 pub fn text(line: &Line) -> &str {
     match line {
-        Line::Existing { name, .. } => name,
-        Line::New { text, .. } => text,
+        Line::Existing { text, .. } | Line::New { text, .. } => text,
     }
 }
 
 fn text_mut(line: &mut Line) -> &mut String {
     match line {
-        Line::Existing { name, .. } => name,
-        Line::New { text, .. } => text,
+        Line::Existing { text, .. } | Line::New { text, .. } => text,
     }
 }
 
@@ -877,7 +876,7 @@ mod tests {
             names
                 .iter()
                 .map(|name| Entry {
-                    name: (*name).into(),
+                    text: (*name).into(),
                     keywords: format!("#{name}#"),
                     fixed: name.starts_with('('),
                 })
@@ -1156,7 +1155,7 @@ mod tests {
 
         let expected = Line::Existing {
             id: EntryId(0),
-            name: "a2".into(),
+            text: "a2".into(),
         };
         assert_eq!(ed.lines(), [expected]);
     }

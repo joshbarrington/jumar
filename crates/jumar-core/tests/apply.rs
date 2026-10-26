@@ -1,4 +1,8 @@
 #![expect(clippy::unwrap_used, reason = "fixture setup should panic on failure")]
+#![expect(
+    clippy::result_large_err,
+    reason = "helpers return what `prepare` does"
+)]
 
 mod common;
 
@@ -28,7 +32,7 @@ struct Fixture {
 /// A create for line `text`, opened on worktree 0.
 fn create_op(text: &str) -> Operation {
     Operation::Create {
-        target: plan::parse_target(text, 1).unwrap(),
+        target: plan::parse_target(text).unwrap(),
         near: Some(EntryId(0)),
     }
 }

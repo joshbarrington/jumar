@@ -5,8 +5,11 @@
 - A new line that names a branch on the remote only, such as `fix` for `origin/fix`, now
   makes a local branch that tracks it, instead of a new branch from the default branch.
 - An unknown start, such as `fix@nope`, is blocked on the confirm screen.
-- Branch names can contain `/`, such as `jb/fix`. The directory gets `-` instead, so it is
-  `jb-fix`.
+- Each line shows the directory, then the branch. Edit the directory to move the worktree,
+  and edit the branch to rename the branch; one no longer renames the other.
+- A new line takes a branch, or a directory and then a branch, such as `tui feat/tui`. Given
+  only a branch, the directory is its name with each `/` as `-`. A hint under each new line
+  shows what it will create, or why it can't.
 - `o` and `O` create in the repo of the line under the cursor, and the new line shows under
   that repo. Before, `O` on a repo's first line used the repo above it.
 - **Breaking:** write `app:fix`, not `app/fix`, to create a worktree in another repo.

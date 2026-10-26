@@ -10,10 +10,9 @@ pub struct EntryId(pub usize);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Line {
-    Existing {
-        id: EntryId,
-        name: String,
-    },
+    /// `dir branch`, split by [`columns`]. A worktree without a branch, such as a
+    /// detached checkout, has only its directory.
+    Existing { id: EntryId, text: String },
     /// Raw text, parsed by [`parse_target`]; the target is resolved to a repo and source
     /// on apply.
     New {
@@ -42,11 +41,23 @@ pub enum Operation {
     },
 }
 
-/// A new line, `[repo:]name[@start]`, where `#123` alone is PR 123 as branch `pr-123`
-/// and `name@#123` names it.
+/// The directory and the rest of a line, split at the first run of spaces.
+#[must_use]
+pub fn columns(text: &str) -> (&str, &str) {
+    let text = text.trim_start();
+    match text.find(char::is_whitespace) {
+        Some(end) => (&text[..end], text[end..].trim()),
+        None => (text, ""),
+    }
+}
+
+/// A new line, `[repo:][dir ]branch[@start]`. Without a directory, the branch names it,
+/// with each `/` as `-`. `#123` as the branch is PR 123 as branch `pr-123`, and
+/// `branch@#123` names it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Target {
     pub repo: Option<String>,
+    pub dir: String,
     pub name: String,
     /// Where a new branch starts; never set for a PR.
     pub base: Option<String>,
@@ -58,6 +69,9 @@ impl fmt::Display for Target {
         if let Some(repo) = &self.repo {
             write!(f, "{repo}:")?;
         }
+        if self.dir != dir_name_for(&self.name) {
+            write!(f, "{} ", self.dir)?;
+        }
         match (self.pull, &self.base) {
             (Some(n), _) if self.name == format!("pr-{n}") => write!(f, "#{n}"),
             (Some(n), _) => write!(f, "{}@#{n}", self.name),
@@ -67,47 +81,82 @@ impl fmt::Display for Target {
     }
 }
 
-/// Parses a new line's text. Splits on the first `@`, then the first `:`; git forbids
-/// both in branch names, so neither split is ambiguous.
+/// Why a new line's text cannot be read.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum TargetError {
+    #[error("type a branch, or a directory and then a branch")]
+    MissingBranch,
+    #[error("write a start after `@`, or leave out the `@`")]
+    MissingBase,
+    #[error("write a repo before `:`, or leave out the `:`")]
+    MissingRepo,
+    #[error("write a directory and a branch, with nothing after them but @start")]
+    TooManyWords,
+    #[error("`{0}` is not a valid directory name")]
+    InvalidDir(String),
+    #[error("`#{0}` is not a PR number")]
+    BadPull(String),
+    #[error("write branch@#123 to name a PR's branch")]
+    NamedPull,
+}
+
+/// Parses a new line's text. Splits on the first `@`, then on spaces, then on the first
+/// `:`; git forbids all three in branch names, so no split is ambiguous.
 ///
 /// # Errors
 ///
-/// Returns what is missing or malformed, reported against line `line`.
-pub fn parse_target(text: &str, line: usize) -> Result<Target, PlanError> {
+/// Returns what is missing or malformed.
+pub fn parse_target(text: &str) -> Result<Target, TargetError> {
     let (target, base) = match text.split_once('@') {
         Some((target, base)) => (target.trim(), Some(base.trim())),
         None => (text.trim(), None),
     };
-    let (repo, name) = match target.split_once(':') {
-        Some((repo, name)) => (Some(repo.trim()), name.trim()),
-        None => (None, target),
+    let words: Vec<&str> = target.split_whitespace().collect();
+    let (first, dir, branch) = match words[..] {
+        [] => return Err(TargetError::MissingBranch),
+        [branch] => (branch, None, branch),
+        [dir, branch] => (dir, Some(dir), branch),
+        _ => return Err(TargetError::TooManyWords),
     };
-    if name.is_empty() {
-        return Err(PlanError::MissingTarget { line });
+    let (repo, rest) = match first.split_once(':') {
+        Some((repo, rest)) => (Some(repo), rest),
+        None => (None, first),
+    };
+    // The repo prefix belongs to whichever word comes first; `app: fix` has no directory.
+    let (dir, branch) = match dir {
+        Some(_) if !rest.is_empty() => (Some(rest), branch),
+        Some(_) => (None, branch),
+        None => (None, rest),
+    };
+    if repo == Some("") {
+        return Err(TargetError::MissingRepo);
+    }
+    if branch.is_empty() {
+        return Err(TargetError::MissingBranch);
     }
     if base == Some("") {
-        return Err(PlanError::MissingBase { line });
-    }
-    if repo == Some("") {
-        return Err(PlanError::MissingRepo { line });
+        return Err(TargetError::MissingBase);
     }
     let number = |text: &str| {
-        text.parse::<u32>().map_err(|_| PlanError::BadPull {
-            line,
-            text: text.to_owned(),
-        })
+        text.parse::<u32>()
+            .map_err(|_| TargetError::BadPull(text.to_owned()))
     };
-    let (name, base, pull) = match (name.strip_prefix('#'), base.map(|b| b.strip_prefix('#'))) {
+    let (name, base, pull) = match (branch.strip_prefix('#'), base.map(|b| b.strip_prefix('#'))) {
         (Some(n), None) => {
             let n = number(n)?;
             (format!("pr-{n}"), None, Some(n))
         }
-        (Some(_), Some(_)) => return Err(PlanError::NamedPull { line }),
-        (None, Some(Some(n))) => (name.to_owned(), None, Some(number(n)?)),
-        (None, _) => (name.to_owned(), base.map(str::to_owned), None),
+        (Some(_), Some(_)) => return Err(TargetError::NamedPull),
+        (None, Some(Some(n))) => (branch.to_owned(), None, Some(number(n)?)),
+        (None, _) => (branch.to_owned(), base.map(str::to_owned), None),
     };
+    let dir = dir.map_or_else(|| dir_name_for(&name), str::to_owned);
+    if !is_valid_dir_name(&dir) {
+        return Err(TargetError::InvalidDir(dir));
+    }
     Ok(Target {
         repo: repo.map(str::to_owned),
+        dir,
         name,
         base,
         pull,
@@ -126,16 +175,18 @@ pub enum PlanError {
     Unhealthy { line: usize },
     #[error("line {line}: {} is already taken", path.display())]
     Collision { line: usize, path: PathBuf },
-    #[error("line {line}: new worktree needs a name")]
-    MissingTarget { line: usize },
-    #[error("line {line}: write a start after `@`, or leave out the `@`")]
-    MissingBase { line: usize },
-    #[error("line {line}: write a repo before `:`, or leave out the `:`")]
-    MissingRepo { line: usize },
-    #[error("line {line}: `#{text}` is not a PR number")]
-    BadPull { line: usize, text: String },
-    #[error("line {line}: write name@#123 to name a PR's worktree")]
-    NamedPull { line: usize },
+    #[error("line {line}: write the branch after the directory")]
+    MissingBranch { line: usize },
+    #[error("line {line}: a checkout without a branch has no branch to rename")]
+    NoBranch { line: usize },
+    #[error("line {line}: write only a directory and a branch")]
+    TooManyWords { line: usize },
+    #[error("line {line}: {source}")]
+    Target {
+        line: usize,
+        #[source]
+        source: TargetError,
+    },
 }
 
 /// Diffs the edited buffer against `original`. Operations come back in apply order:
@@ -157,7 +208,7 @@ pub fn plan(original: &[Worktree], lines: &[Line]) -> Result<Vec<Operation>, Vec
         }
         let line_no = index + 1;
         match line {
-            Line::Existing { id, name } => {
+            Line::Existing { id, text } => {
                 let Some(worktree) = original.get(id.0) else {
                     errors.push(PlanError::UnknownEntry { line: line_no });
                     continue;
@@ -169,25 +220,10 @@ pub fn plan(original: &[Worktree], lines: &[Line]) -> Result<Vec<Operation>, Vec
                 if worktree.main {
                     continue;
                 }
-                let name = name.trim();
-                let dir = dir_name_for(name);
-                let same_dir = is_dir_of(&dir, &worktree.path);
-                let rename_branch = renamed_branch(worktree, name);
-                // The buffer shows directories, so an untouched line is a no-op, while
-                // `jb-a` to `jb/a` keeps the directory but can still rename the branch.
-                if same_dir && (Some(name) == dir_name(&worktree.path) || rename_branch.is_none()) {
-                    continue;
-                }
-                if !is_valid_dir_name(&dir) {
-                    errors.push(PlanError::InvalidName {
-                        line: line_no,
-                        name: name.to_owned(),
-                    });
-                } else if worktree.health == Health::Healthy {
-                    let to = (!same_dir).then(|| worktree.path.with_file_name(dir));
-                    moves.push((line_no, *id, to, rename_branch));
-                } else {
-                    errors.push(PlanError::Unhealthy { line: line_no });
+                match edit(worktree, text, line_no) {
+                    Ok(Some(edit)) => moves.push((line_no, *id, edit)),
+                    Ok(None) => {}
+                    Err(err) => errors.push(err),
                 }
             }
             Line::New { text, near: opened } => {
@@ -195,12 +231,15 @@ pub fn plan(original: &[Worktree], lines: &[Line]) -> Result<Vec<Operation>, Vec
                 if text.is_empty() {
                     continue;
                 }
-                match parse_target(text, line_no) {
+                match parse_target(text) {
                     Ok(target) => creates.push(Operation::Create {
                         target,
                         near: opened.or(near),
                     }),
-                    Err(err) => errors.push(err),
+                    Err(source) => errors.push(PlanError::Target {
+                        line: line_no,
+                        source,
+                    }),
                 }
             }
         }
@@ -214,7 +253,7 @@ pub fn plan(original: &[Worktree], lines: &[Line]) -> Result<Vec<Operation>, Vec
         .filter(|id| !seen.contains(id) && !original[id.0].main)
         .map(|id| Operation::Remove { id })
         .collect();
-    for (line, id, to, rename_branch) in moves {
+    for (line, id, Edit { to, rename_branch }) in moves {
         if let Some(to) = &to
             && !taken.insert(to.clone())
         {
@@ -249,12 +288,44 @@ impl PlanError {
             | Self::UnknownEntry { line }
             | Self::Unhealthy { line }
             | Self::Collision { line, .. }
-            | Self::MissingTarget { line }
-            | Self::MissingBase { line }
-            | Self::MissingRepo { line }
-            | Self::BadPull { line, .. }
-            | Self::NamedPull { line } => *line,
+            | Self::MissingBranch { line }
+            | Self::NoBranch { line }
+            | Self::TooManyWords { line }
+            | Self::Target { line, .. } => *line,
         }
+    }
+}
+
+/// What an edited `dir branch` line asks of its worktree.
+struct Edit {
+    to: Option<PathBuf>,
+    rename_branch: Option<String>,
+}
+
+/// The edit a `dir branch` line asks for, or `None` when it changes neither.
+fn edit(worktree: &Worktree, text: &str, line: usize) -> Result<Option<Edit>, PlanError> {
+    let (dir, branch) = columns(text);
+    let rename_branch = match (&worktree.head, branch) {
+        (Some(Head::Branch(_)), "") => return Err(PlanError::MissingBranch { line }),
+        (Some(Head::Branch(_)), new) if new.contains(char::is_whitespace) => {
+            return Err(PlanError::TooManyWords { line });
+        }
+        (Some(Head::Branch(old)), new) => (new != old).then(|| new.to_owned()),
+        (_, "") => None,
+        (_, _) => return Err(PlanError::NoBranch { line }),
+    };
+    let to = (Some(dir) != dir_name(&worktree.path)).then(|| worktree.path.with_file_name(dir));
+    if to.is_none() && rename_branch.is_none() {
+        Ok(None)
+    } else if !is_valid_dir_name(dir) {
+        Err(PlanError::InvalidName {
+            line,
+            name: dir.to_owned(),
+        })
+    } else if worktree.health == Health::Healthy {
+        Ok(Some(Edit { to, rename_branch }))
+    } else {
+        Err(PlanError::Unhealthy { line })
     }
 }
 
@@ -265,24 +336,8 @@ fn existing_id(original: &[Worktree], line: &Line) -> Option<EntryId> {
     }
 }
 
-/// `name` when the branch is named after the directory, so renaming one renames both.
-fn renamed_branch(worktree: &Worktree, name: &str) -> Option<String> {
-    match &worktree.head {
-        Some(Head::Branch(branch))
-            if branch != name && is_dir_of(&dir_name_for(branch), &worktree.path) =>
-        {
-            Some(name.to_owned())
-        }
-        _ => None,
-    }
-}
-
 fn dir_name(path: &Path) -> Option<&str> {
     path.file_name()?.to_str()
-}
-
-fn is_dir_of(dir: &str, path: &Path) -> bool {
-    dir_name(path) == Some(dir)
 }
 
 /// The directory for branch `name`: `jb/fix` lives in `jb-fix`, so every worktree stays
@@ -293,7 +348,7 @@ pub fn dir_name_for(name: &str) -> String {
 }
 
 fn is_valid_dir_name(name: &str) -> bool {
-    !name.is_empty() && name != "." && name != ".." && !name.contains('\0')
+    !name.is_empty() && name != "." && name != ".." && !name.contains(['/', '\0'])
 }
 
 #[cfg(test)]
@@ -317,10 +372,10 @@ mod tests {
         vec![worktree("/w/a", "a"), worktree("/w/b", "feature/b")]
     }
 
-    fn keep(id: usize, name: &str) -> Line {
+    fn keep(id: usize, text: &str) -> Line {
         Line::Existing {
             id: EntryId(id),
-            name: name.into(),
+            text: text.into(),
         }
     }
 
@@ -332,7 +387,20 @@ mod tests {
     }
 
     fn unchanged() -> Vec<Line> {
-        vec![keep(0, "a"), keep(1, "b")]
+        vec![keep(0, "a a"), keep(1, "b feature/b")]
+    }
+
+    fn moved(id: usize, to: Option<&str>, branch: Option<&str>) -> Operation {
+        Operation::Move {
+            id: EntryId(id),
+            to: to.map(PathBuf::from),
+            rename_branch: branch.map(Into::into),
+        }
+    }
+
+    #[test]
+    fn columns_should_split_at_the_first_run_of_spaces() {
+        assert_eq!(columns("  tui   feat/x @main "), ("tui", "feat/x @main"));
     }
 
     #[test]
@@ -342,7 +410,7 @@ mod tests {
 
     #[test]
     fn plan_should_remove_deleted_line() {
-        let ops = plan(&original(), &[keep(1, "b")]).unwrap();
+        let ops = plan(&original(), &[keep(1, "b feature/b")]).unwrap();
 
         assert_eq!(ops, [Operation::Remove { id: EntryId(0) }]);
     }
@@ -359,35 +427,79 @@ mod tests {
     }
 
     #[test]
-    fn plan_should_rename_branch_when_it_matched_directory() {
-        let ops = plan(&original(), &[keep(0, "a2"), keep(1, "b")]).unwrap();
+    fn plan_should_move_only_the_directory_when_it_changes() {
+        let ops = plan(&original(), &[keep(0, "a2 a"), keep(1, "b feature/b")]).unwrap();
 
-        let expected = Operation::Move {
-            id: EntryId(0),
-            to: Some(PathBuf::from("/w/a2")),
-            rename_branch: Some("a2".into()),
-        };
-        assert_eq!(ops, [expected]);
+        assert_eq!(ops, [moved(0, Some("/w/a2"), None)]);
     }
 
     #[test]
-    fn plan_should_keep_branch_when_it_differed_from_directory() {
-        let ops = plan(&original(), &[keep(0, "a"), keep(1, "b2")]).unwrap();
+    fn plan_should_rename_only_the_branch_when_it_changes() {
+        let ops = plan(&original(), &[keep(0, "a a"), keep(1, "b feat/b")]).unwrap();
 
-        assert!(matches!(
-            &ops[0],
-            Operation::Move {
-                rename_branch: None,
-                ..
-            }
-        ));
+        assert_eq!(ops, [moved(1, None, Some("feat/b"))]);
     }
 
     #[test]
-    fn plan_should_ignore_surrounding_whitespace_in_names() {
+    fn plan_should_move_and_rename_when_both_change() {
+        let ops = plan(&original(), &[keep(0, "a2 jb/a"), keep(1, "b feature/b")]).unwrap();
+
+        assert_eq!(ops, [moved(0, Some("/w/a2"), Some("jb/a"))]);
+    }
+
+    #[test]
+    fn plan_should_ignore_spacing_between_and_around_columns() {
         assert_eq!(
-            plan(&original(), &[keep(0, " a "), keep(1, "b\t")]),
+            plan(&original(), &[keep(0, " a   a "), keep(1, "b\tfeature/b")]),
             Ok(vec![])
+        );
+    }
+
+    #[test]
+    fn plan_should_leave_a_detached_checkout_with_only_its_directory() {
+        let mut original = original();
+        original[0].head = Some(Head::Detached("0123".into()));
+
+        assert_eq!(
+            plan(&original, &[keep(0, "a"), keep(1, "b feature/b")]),
+            Ok(vec![])
+        );
+    }
+
+    #[test]
+    fn plan_should_reject_a_branch_for_a_detached_checkout() {
+        let mut original = original();
+        original[0].head = Some(Head::Detached("0123".into()));
+
+        let errors = plan(&original, &[keep(0, "a x"), keep(1, "b feature/b")]).unwrap_err();
+
+        assert_eq!(errors, [PlanError::NoBranch { line: 1 }]);
+    }
+
+    #[test]
+    fn plan_should_reject_a_line_missing_its_branch() {
+        let errors = plan(&original(), &[keep(0, "a"), keep(1, "b feature/b")]).unwrap_err();
+
+        assert_eq!(errors, [PlanError::MissingBranch { line: 1 }]);
+    }
+
+    #[test]
+    fn plan_should_reject_a_third_word() {
+        let errors = plan(&original(), &[keep(0, "a a x"), keep(1, "b feature/b")]).unwrap_err();
+
+        assert_eq!(errors, [PlanError::TooManyWords { line: 1 }]);
+    }
+
+    #[test]
+    fn plan_should_reject_a_slash_in_the_directory() {
+        let errors = plan(&original(), &[keep(0, "x/y a"), keep(1, "b feature/b")]).unwrap_err();
+
+        assert_eq!(
+            errors,
+            [PlanError::InvalidName {
+                line: 1,
+                name: "x/y".into(),
+            }]
         );
     }
 
@@ -401,6 +513,7 @@ mod tests {
         let expected = Operation::Create {
             target: Target {
                 repo: Some("app".into()),
+                dir: "fix".into(),
                 name: "fix".into(),
                 base: None,
                 pull: None,
@@ -412,7 +525,7 @@ mod tests {
 
     #[test]
     fn plan_should_take_context_from_line_above_new_line() {
-        let lines = [keep(0, "a"), new("x"), keep(1, "b")];
+        let lines = [keep(0, "a a"), new("x"), keep(1, "b feature/b")];
 
         let ops = plan(&original(), &lines).unwrap();
 
@@ -431,7 +544,7 @@ mod tests {
             text: "x".into(),
             near: Some(EntryId(1)),
         };
-        let lines = [keep(0, "a"), opened, keep(1, "b")];
+        let lines = [keep(0, "a a"), opened, keep(1, "b feature/b")];
 
         let ops = plan(&original(), &lines).unwrap();
 
@@ -446,7 +559,7 @@ mod tests {
 
     #[test]
     fn plan_should_take_context_from_line_below_when_new_line_is_first() {
-        let lines = [new("x"), keep(1, "b"), keep(0, "a")];
+        let lines = [new("x"), keep(1, "b feature/b"), keep(0, "a a")];
 
         let ops = plan(&original(), &lines).unwrap();
 
@@ -467,18 +580,6 @@ mod tests {
     }
 
     #[test]
-    fn plan_should_split_base_from_new_line() {
-        let mut lines = unchanged();
-        lines.push(new("fix@dev"));
-
-        let ops = plan(&original(), &lines).unwrap();
-
-        assert!(
-            matches!(&ops[0], Operation::Create { target, .. } if target.base.as_deref() == Some("dev"))
-        );
-    }
-
-    #[test]
     fn plan_should_ignore_blank_new_lines() {
         let mut lines = unchanged();
         lines.push(new("  "));
@@ -488,7 +589,7 @@ mod tests {
 
     #[test]
     fn plan_should_order_removes_then_moves_then_creates() {
-        let lines = [new("c"), keep(1, "b2")];
+        let lines = [new("c"), keep(1, "b2 feature/b")];
 
         let ops = plan(&original(), &lines).unwrap();
 
@@ -505,14 +606,14 @@ mod tests {
 
     #[test]
     fn plan_should_allow_moving_onto_removed_worktree_path() {
-        let ops = plan(&original(), &[keep(1, "a")]).unwrap();
+        let ops = plan(&original(), &[keep(1, "a feature/b")]).unwrap();
 
         assert_eq!(ops.len(), 2);
     }
 
     #[test]
     fn plan_should_reject_moving_onto_surviving_worktree() {
-        let errors = plan(&original(), &[keep(0, "a"), keep(1, "a")]).unwrap_err();
+        let errors = plan(&original(), &[keep(0, "a a"), keep(1, "a feature/b")]).unwrap_err();
 
         assert_eq!(
             errors,
@@ -525,66 +626,14 @@ mod tests {
 
     #[test]
     fn plan_should_reject_swapping_names() {
-        let errors = plan(&original(), &[keep(0, "b"), keep(1, "a")]).unwrap_err();
+        let errors = plan(&original(), &[keep(0, "b a"), keep(1, "a feature/b")]).unwrap_err();
 
         assert_eq!(errors.len(), 2);
     }
 
     #[test]
-    fn plan_should_move_name_with_slash_into_cleaned_directory() {
-        let ops = plan(&original(), &[keep(0, "jb/a"), keep(1, "b")]).unwrap();
-
-        let expected = Operation::Move {
-            id: EntryId(0),
-            to: Some(PathBuf::from("/w/jb-a")),
-            rename_branch: Some("jb/a".into()),
-        };
-        assert_eq!(ops, [expected]);
-    }
-
-    #[test]
-    fn plan_should_rename_branch_whose_cleaned_name_matched_directory() {
-        let original = vec![worktree("/w/jb-a", "jb/a")];
-
-        let ops = plan(&original, &[keep(0, "jb/a2")]).unwrap();
-
-        assert!(matches!(
-            &ops[0],
-            Operation::Move { rename_branch: Some(b), .. } if b == "jb/a2"
-        ));
-    }
-
-    #[test]
-    fn plan_should_rename_only_the_branch_when_the_directory_stays() {
-        let original = vec![worktree("/w/jb-a", "jb-a")];
-
-        let ops = plan(&original, &[keep(0, "jb/a")]).unwrap();
-
-        let expected = Operation::Move {
-            id: EntryId(0),
-            to: None,
-            rename_branch: Some("jb/a".into()),
-        };
-        assert_eq!(ops, [expected]);
-    }
-
-    #[test]
-    fn plan_should_leave_an_untouched_line_whose_branch_has_a_slash() {
-        let original = vec![worktree("/w/jb-a", "jb/a")];
-
-        assert_eq!(plan(&original, &[keep(0, "jb-a")]), Ok(vec![]));
-    }
-
-    #[test]
-    fn plan_should_leave_worktree_when_name_cleans_to_its_directory() {
-        let original = vec![worktree("/w/jb-a", "jb/a")];
-
-        assert_eq!(plan(&original, &[keep(0, "jb/a")]), Ok(vec![]));
-    }
-
-    #[test]
     fn plan_should_reject_dot_dot_name() {
-        let errors = plan(&original(), &[keep(0, ".."), keep(1, "b")]).unwrap_err();
+        let errors = plan(&original(), &[keep(0, ".. a"), keep(1, "b feature/b")]).unwrap_err();
 
         assert_eq!(
             errors,
@@ -596,25 +645,21 @@ mod tests {
     }
 
     #[test]
-    fn plan_should_reject_empty_name() {
-        let errors = plan(&original(), &[keep(0, ""), keep(1, "b")]).unwrap_err();
-
-        assert!(matches!(
-            errors[..],
-            [PlanError::InvalidName { line: 1, .. }]
-        ));
-    }
-
-    #[test]
     fn plan_should_reject_duplicated_line() {
-        let errors = plan(&original(), &[keep(0, "a"), keep(1, "b"), keep(0, "a")]).unwrap_err();
+        let mut lines = unchanged();
+        lines.push(keep(0, "a a"));
+
+        let errors = plan(&original(), &lines).unwrap_err();
 
         assert_eq!(errors, [PlanError::Duplicate { line: 3 }]);
     }
 
     #[test]
     fn plan_should_reject_unknown_entry() {
-        let errors = plan(&original(), &[keep(0, "a"), keep(1, "b"), keep(7, "z")]).unwrap_err();
+        let mut lines = unchanged();
+        lines.push(keep(7, "z z"));
+
+        let errors = plan(&original(), &lines).unwrap_err();
 
         assert_eq!(errors, [PlanError::UnknownEntry { line: 3 }]);
     }
@@ -624,34 +669,30 @@ mod tests {
         let mut original = original();
         original[0].health = Health::Prunable;
 
-        let errors = plan(&original, &[keep(0, "a2"), keep(1, "b")]).unwrap_err();
+        let errors = plan(&original, &[keep(0, "a2 a"), keep(1, "b feature/b")]).unwrap_err();
 
         assert_eq!(errors, [PlanError::Unhealthy { line: 1 }]);
     }
 
     #[test]
-    fn plan_should_reject_new_line_without_target() {
-        let mut lines = unchanged();
-        lines.push(new("@dev"));
-
-        let errors = plan(&original(), &lines).unwrap_err();
-
-        assert_eq!(errors, [PlanError::MissingTarget { line: 3 }]);
-    }
-
-    #[test]
-    fn plan_should_reject_new_line_with_empty_base() {
+    fn plan_should_report_a_new_line_it_cannot_read() {
         let mut lines = unchanged();
         lines.push(new("fix @ "));
 
         let errors = plan(&original(), &lines).unwrap_err();
 
-        assert_eq!(errors, [PlanError::MissingBase { line: 3 }]);
+        assert_eq!(
+            errors,
+            [PlanError::Target {
+                line: 3,
+                source: TargetError::MissingBase
+            }]
+        );
     }
 
     #[test]
     fn plan_should_report_every_invalid_line() {
-        let lines = [keep(0, ".."), keep(1, ""), new("@b")];
+        let lines = [keep(0, ".. a"), keep(1, "b"), new("@b")];
 
         let errors = plan(&original(), &lines).unwrap_err();
 
@@ -659,66 +700,105 @@ mod tests {
         assert_eq!(lines, [1, 2, 3]);
     }
 
-    fn parsed(text: &str) -> Result<Target, PlanError> {
-        parse_target(text, 1)
+    fn target(repo: Option<&str>, dir: &str, name: &str, base: Option<&str>) -> Target {
+        Target {
+            repo: repo.map(Into::into),
+            dir: dir.into(),
+            name: name.into(),
+            base: base.map(Into::into),
+            pull: None,
+        }
     }
 
     #[test]
-    fn parse_target_should_read_repo_name_and_start() {
-        let target = parsed(" api : jb/fix @ origin/dev ").unwrap();
-
+    fn parse_target_should_name_the_directory_after_a_lone_branch() {
         assert_eq!(
-            target,
-            Target {
-                repo: Some("api".into()),
-                name: "jb/fix".into(),
-                base: Some("origin/dev".into()),
-                pull: None,
-            }
+            parse_target("feat/tui-improvements"),
+            Ok(target(
+                None,
+                "feat-tui-improvements",
+                "feat/tui-improvements",
+                None
+            ))
+        );
+    }
+
+    #[test]
+    fn parse_target_should_read_a_directory_then_a_branch() {
+        assert_eq!(
+            parse_target(" api:tui  feat/tui-improvements @ origin/dev "),
+            Ok(target(
+                Some("api"),
+                "tui",
+                "feat/tui-improvements",
+                Some("origin/dev")
+            ))
+        );
+    }
+
+    #[test]
+    fn parse_target_should_give_a_lone_branch_its_repo() {
+        assert_eq!(
+            [parse_target("api:feat/x"), parse_target("api: feat/x")],
+            [
+                Ok(target(Some("api"), "feat-x", "feat/x", None)),
+                Ok(target(Some("api"), "feat-x", "feat/x", None))
+            ]
         );
     }
 
     #[test]
     fn parse_target_should_name_a_bare_pr_after_its_number() {
-        let target = parsed("#7").unwrap();
+        let target = parse_target("#7").unwrap();
 
-        assert_eq!((target.name.as_str(), target.pull), ("pr-7", Some(7)));
+        assert_eq!(
+            (target.dir.as_str(), target.name.as_str(), target.pull),
+            ("pr-7", "pr-7", Some(7))
+        );
     }
 
     #[test]
     fn parse_target_should_keep_a_given_name_for_a_pr() {
-        let target = parsed("review@#7").unwrap();
+        let target = parse_target("rev review@#7").unwrap();
 
         assert_eq!(
-            (target.name.as_str(), target.base, target.pull),
-            ("review", None, Some(7))
+            (
+                target.dir.as_str(),
+                target.name.as_str(),
+                target.base,
+                target.pull
+            ),
+            ("rev", "review", None, Some(7))
         );
     }
 
     #[test]
     fn parse_target_should_reject_malformed_lines() {
-        let errors =
-            ["app:", ":fix", "fix@", "#seven", "#1@#2"].map(|text| parsed(text).unwrap_err());
+        let errors = [
+            "app:", ":fix", "fix@", "#seven", "#1@#2", "a b c", "x/y fix", "@dev",
+        ]
+        .map(|text| parse_target(text).unwrap_err());
 
         assert_eq!(
             errors,
             [
-                PlanError::MissingTarget { line: 1 },
-                PlanError::MissingRepo { line: 1 },
-                PlanError::MissingBase { line: 1 },
-                PlanError::BadPull {
-                    line: 1,
-                    text: "seven".into()
-                },
-                PlanError::NamedPull { line: 1 },
+                TargetError::MissingBranch,
+                TargetError::MissingRepo,
+                TargetError::MissingBase,
+                TargetError::BadPull("seven".into()),
+                TargetError::NamedPull,
+                TargetError::TooManyWords,
+                TargetError::InvalidDir("x/y".into()),
+                TargetError::MissingBranch,
             ]
         );
     }
 
     #[test]
     fn target_should_display_as_written() {
-        let shown = ["api:fix@v2", "#7", "review@#7"].map(|text| parsed(text).unwrap().to_string());
+        let shown = ["api:fix@v2", "#7", "review@#7", "tui feat/x"]
+            .map(|text| parse_target(text).unwrap().to_string());
 
-        assert_eq!(shown, ["api:fix@v2", "#7", "review@#7"]);
+        assert_eq!(shown, ["api:fix@v2", "#7", "review@#7", "tui feat/x"]);
     }
 }

@@ -2,8 +2,8 @@
 
 jumar shows your git worktrees as a text buffer that you edit like a file, in the style of
 [oil.nvim](https://github.com/stevearc/oil.nvim). Delete a line to remove a worktree. Edit a
-name to rename it. Add a line to create one. Then type `:w` to review the changes and apply
-them.
+directory or a branch to rename it. Add a line to create one. Then type `:w` to review the
+changes and apply them.
 
 <p align="center">
   <img src="assets/screenshot.png" alt="jumar listing eight worktrees of one repo, with columns for name, branch, status, age, source and herdr agent state">
@@ -80,7 +80,7 @@ Run `jumar` to open the buffer. Nothing changes until you type `:w`.
 | `dd` | remove the worktree |
 | `v` `V`, then `d` | remove the selected worktrees (`o` jumps to the other end) |
 | `:clean` | remove every safe (green) worktree that the filter shows |
-| `cw` `ciw` `x` `i` `a` `A` `I` | rename the worktree |
+| `cw` `ciw` `x` `i` `a` `A` `I` | edit the directory or branch |
 | `o` `O` | create a worktree (see [Create](#create)) |
 | `u` `Ctrl-r` | undo, redo |
 | `:w` `:wq` `:q` `:q!` | apply, apply and quit, quit, quit without saving |
@@ -126,10 +126,15 @@ green, jumar keeps it and tells you.
 
 ### Rename
 
-A rename moves the directory. If the branch had the same name, the branch is renamed too. A
-`/` in a name becomes `-` in the directory, so the branch `jb/fix` lives in `jb-fix`, and
-renaming that line to `jb/fix2` renames both. Renaming a `jb-fix` line on branch `jb-fix` to
-`jb/fix` renames only the branch, and works on a locked worktree too.
+Each line is the worktree's directory, then its branch: `tui  feat/tui-improvements`. Edit
+either word:
+
+- Edit the directory to move the worktree. Its branch stays as it is.
+- Edit the branch to rename the branch. The directory stays, and this works on a locked
+  worktree too.
+- Edit both to do both.
+
+A checkout without a branch, such as a detached one, has only its directory to edit.
 
 Before it moves anything, jumar blocks a new branch name that git does not allow, that already
 exists, or that clashes with a branch it would nest under or over: `jb/fix` cannot exist next
@@ -137,15 +142,17 @@ to `jb`. You cannot rename a worktree or its branch while a herdr agent runs in 
 
 ### Create
 
-Press `o` or `O` on a worktree, then type one of these. The new worktree goes in the same repo
-and source as the line you pressed it on, unless the line names a repo with `repo:`. The new
-line shows under the repo it goes in:
+Press `o` or `O` on a worktree, then type a branch, or a directory and then a branch. The new
+worktree goes in the same repo and source as the line you pressed it on, unless the line names
+a repo with `repo:`. The new line shows under the repo it goes in, and a hint under it shows
+what it will create, or why it can't:
 
 | Line | Creates |
 |---|---|
-| `fix` | branch `fix` from the default branch of the repo |
-| `app:fix` | the same, in the repo `app` |
-| `jb/fix` | branch `jb/fix`, in the directory `jb-fix` |
+| `fix` | branch `fix` from the default branch of the repo, in the directory `fix` |
+| `feat/tui` | branch `feat/tui`, in the directory `feat-tui` |
+| `tui feat/tui` | branch `feat/tui`, in the directory `tui` |
+| `app:fix` | branch `fix`, in the repo `app` |
 | `fix@v2` | branch `fix` from `v2` |
 | `fix`, when branch `fix` exists | a worktree for the existing branch |
 | `fix`, when only `origin/fix` exists | branch `fix` that tracks `origin/fix` |

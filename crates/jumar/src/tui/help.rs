@@ -13,10 +13,13 @@ const SECTIONS: [(&str, &[(&str, &str)]); 4] = [
             ("/", "filter by name, repo, source or branch"),
             ("dd", "remove the worktree (v V then d for several)"),
             (":clean", "remove every safe worktree shown"),
-            ("cw", "rename it"),
+            (
+                "cw",
+                "rename the directory or, on the second word, the branch",
+            ),
             (
                 "o O",
-                "create one: name, repo:name, name@base or #123 for a PR",
+                "create one: branch, or dir branch; repo:…, …@start, #123 for a PR",
             ),
         ],
     ),

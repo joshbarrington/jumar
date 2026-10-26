@@ -10,7 +10,7 @@ use jumar_core::discovery;
 use jumar_core::editor::{Editor, Entry, Mode};
 use jumar_core::herdr::{self, AgentStatus, Herdr};
 use jumar_core::inspect::inspect_all;
-use jumar_core::model::{Health, Worktree};
+use jumar_core::model::{Head, Health, Worktree};
 use jumar_core::plan::{self, EntryId, Line as BufferLine};
 use jumar_core::safety::Tier;
 use ratatui::Frame;
@@ -44,8 +44,13 @@ struct Row<'a> {
     /// `None` for a new line, which shows under whichever group it was typed in.
     repo: Option<&'a Path>,
     mark: Span<'static>,
+    /// The line's whole text, which the cursor moves through.
+    text: &'a str,
     name: &'a str,
     branch: String,
+    branch_style: Style,
+    /// What a new line will create, or why it can't, shown dim beneath it.
+    hint: Option<Span<'static>>,
     state: String,
     age: Span<'static>,
     source: &'a str,
@@ -59,6 +64,7 @@ enum Display<'a> {
     Gap,
     Group(&'a Path),
     Row(usize),
+    Hint(usize),
 }
 
 const HEADERS: [&str; 6] = ["NAME", "BRANCH", "STATUS", "AGE", "SOURCE", "HERDR"];
@@ -75,7 +81,7 @@ impl Buffer {
         let entries = worktrees
             .iter()
             .map(|w| Entry {
-                name: entry_name(w).to_owned(),
+                text: entry_text(w),
                 fixed: w.main,
                 keywords: format!(
                     "{} {} {}",
@@ -181,10 +187,14 @@ impl Buffer {
         self.editor
             .rows()
             .map(|(_, line)| match line {
-                BufferLine::Existing { id, name } => {
+                BufferLine::Existing { id, text } => {
                     let worktree = &self.worktrees[id.0];
                     let result = self.results[id.0].as_ref();
-                    let renamed = name != entry_name(worktree);
+                    let (name, rest) = plan::columns(text);
+                    let (branch, renamed_branch) = match &worktree.head {
+                        Some(Head::Branch(old)) if !worktree.main => (rest.to_owned(), rest != old),
+                        head => (format::branch(head.as_ref()), false),
+                    };
                     Row {
                         repo: Some(&worktree.repo),
                         mark: if worktree.main {
@@ -192,16 +202,23 @@ impl Buffer {
                         } else {
                             mark(result)
                         },
+                        text,
                         name,
-                        branch: format::branch(worktree.head.as_ref()),
+                        branch,
+                        branch_style: Style::new().fg(if renamed_branch {
+                            theme::YELLOW
+                        } else {
+                            theme::TAN
+                        }),
+                        hint: None,
                         state: format::state(worktree, result),
                         age: age(result, now),
                         source: format::source(worktree),
                         herdr: self.herdr_marker(worktree),
-                        style: if renamed {
-                            Style::new().fg(theme::YELLOW)
-                        } else {
+                        style: if name == entry_name(worktree) {
                             Style::new()
+                        } else {
+                            Style::new().fg(theme::YELLOW)
                         },
                         state_style: match (worktree.health, result) {
                             (Health::Prunable | Health::Orphaned, _) | (_, Some(Err(_))) => {
@@ -214,8 +231,11 @@ impl Buffer {
                 BufferLine::New { text, near } => Row {
                     repo: self.new_line_repo(text, *near),
                     mark: Span::raw("+").fg(theme::GREEN),
-                    name: text,
-                    branch: String::new(),
+                    text,
+                    name: plan::columns(text).0,
+                    branch: plan::columns(text).1.to_owned(),
+                    branch_style: Style::new().fg(theme::GREEN),
+                    hint: Some(new_line_hint(text)),
                     state: String::new(),
                     age: Span::raw(""),
                     source: "",
@@ -230,7 +250,7 @@ impl Buffer {
     /// The repo a new line goes in: the one it names as `repo:name`, else the one it was
     /// opened on. A named repo jumar can't pin down gets no group, as its create is blocked.
     fn new_line_repo(&self, text: &str, near: Option<EntryId>) -> Option<&Path> {
-        match plan::parse_target(text, 0).ok().and_then(|t| t.repo) {
+        match plan::parse_target(text).ok().and_then(|t| t.repo) {
             Some(name) => match discovery::repos_named(&self.worktrees, &name)[..] {
                 [repo] => Some(repo),
                 _ => None,
@@ -288,12 +308,7 @@ impl Buffer {
         });
         let height = usize::from(list.height);
         let scroll = cursor_line.map_or(self.scroll, |line| {
-            // Scrolling up to a group's first row shows its title too.
-            let top = match line.checked_sub(1).map(|l| &display[l]) {
-                Some(Display::Group(_)) => line - 1,
-                _ => line,
-            };
-            self.scroll.min(top).max((line + 1).saturating_sub(height))
+            scroll_to(&display, line, self.scroll, height)
         });
 
         let selected: HashSet<usize> = self.selected().collect();
@@ -314,6 +329,7 @@ impl Buffer {
                     Span::raw("  "),
                     Span::raw(format::tilde(repo, &self.home)).fg(theme::GRAY),
                 ]),
+                Display::Hint(pos) => hint_line(&rows[*pos]),
                 Display::Row(pos) => {
                     let line = row_line(&rows[*pos], widths);
                     if selected.contains(pos) {
@@ -360,8 +376,7 @@ impl Buffer {
                 // a split opens, leaves the cursor hidden.
                 let y = cursor_line.and_then(|line| line.checked_sub(scroll));
                 if let (Some(pos), Some(y)) = (cursor_pos, y.filter(|y| *y < height)) {
-                    let before: String = rows[pos].name.chars().take(col).collect();
-                    let x = width(INDENT) + MARK_WIDTH + width(&before);
+                    let x = width(INDENT) + MARK_WIDTH + cursor_x(rows[pos].text, col, widths[0]);
                     frame.set_cursor_position((list.x + to_u16(x), list.y + to_u16(y)));
                 }
             }
@@ -455,6 +470,9 @@ fn group<'a>(rows: &[Row<'a>]) -> Vec<Display<'a>> {
             current = Some(repo);
         }
         display.push(Display::Row(pos));
+        if row.hint.is_some() {
+            display.push(Display::Hint(pos));
+        }
     }
     display
 }
@@ -495,7 +513,7 @@ fn age(result: Option<&InspectResult>, now: i64) -> Span<'static> {
 fn row_line(row: &Row, widths: [usize; 5]) -> Line<'static> {
     let cells = [
         (row.name.to_owned(), row.style.add_modifier(Modifier::BOLD)),
-        (row.branch.clone(), Style::new().fg(theme::TAN)),
+        (row.branch.clone(), row.branch_style),
         (row.state.clone(), row.state_style),
         (row.age.content.to_string(), row.age.style),
         (row.source.to_owned(), Style::new().fg(theme::GRAY)),
@@ -526,7 +544,89 @@ fn columns(
     Line::from(spans)
 }
 
-/// The text a row starts with; any other text is a rename.
+/// Where the cursor at char `col` of `text` sits on screen: within the directory column,
+/// the gap after it, or the branch column, which starts `name_width` plus the gap in.
+fn cursor_x(text: &str, col: usize, name_width: usize) -> usize {
+    let chars: Vec<char> = text.chars().collect();
+    let run = |from: usize, blank: bool| {
+        from + chars[from..]
+            .iter()
+            .take_while(|c| c.is_whitespace() == blank)
+            .count()
+    };
+    let lead = run(0, true);
+    let dir_end = run(lead, false);
+    let rest = run(dir_end, true);
+    let span = |from: usize, to: usize| width(&chars[from..to].iter().collect::<String>());
+    if col <= dir_end {
+        span(lead.min(col), col)
+    } else if col < rest {
+        (span(lead, dir_end) + col - dir_end).min(name_width + width(GAP) - 1)
+    } else {
+        name_width + width(GAP) + span(rest, col.min(chars.len()))
+    }
+}
+
+/// The scroll that keeps display `line` in view, with its group title above and any
+/// hint below.
+fn scroll_to(display: &[Display], line: usize, scroll: usize, height: usize) -> usize {
+    // Scrolling up to a group's first row shows its title too.
+    let top = match line.checked_sub(1).map(|l| &display[l]) {
+        Some(Display::Group(_)) => line - 1,
+        _ => line,
+    };
+    // A new line's hint scrolls into view with it.
+    let bottom = match display.get(line + 1) {
+        Some(Display::Hint(_)) => line + 1,
+        _ => line,
+    };
+    scroll.min(top).max((bottom + 1).saturating_sub(height))
+}
+
+fn hint_line(row: &Row) -> Line<'static> {
+    Line::from(vec![
+        Span::raw(" ".repeat(width(INDENT) + MARK_WIDTH)),
+        Span::raw("↳ ").fg(theme::GRAY),
+        row.hint.clone().unwrap_or_default(),
+    ])
+}
+
+/// What a new line will create, or why it can't.
+fn new_line_hint(text: &str) -> Span<'static> {
+    if text.trim().is_empty() {
+        let help = "type a branch, or a directory then a branch · @start · #123 for a PR";
+        return Span::raw(help).fg(theme::GRAY);
+    }
+    match plan::parse_target(text) {
+        Ok(target) => {
+            let start = match (target.pull, &target.base) {
+                (Some(n), _) => Some(format!("from PR #{n}")),
+                (None, Some(base)) => Some(format!("from {base}")),
+                (None, None) => None,
+            };
+            let parts = [
+                Some(format!("dir {}", target.dir)),
+                Some(format!("branch {}", target.name)),
+                start,
+                target.repo.map(|repo| format!("in {repo}")),
+            ];
+            Span::raw(parts.into_iter().flatten().collect::<Vec<_>>().join(" · ")).fg(theme::GRAY)
+        }
+        Err(err) => Span::raw(err.to_string()).fg(theme::RED),
+    }
+}
+
+/// The text a row starts with: its directory, then its branch when it can be renamed.
+fn entry_text(worktree: &Worktree) -> String {
+    match &worktree.head {
+        Some(Head::Branch(branch)) if !worktree.main => {
+            format!("{} {branch}", entry_name(worktree))
+        }
+        _ => entry_name(worktree).to_owned(),
+    }
+}
+
+/// The directory a row starts with; any other is a move.
 fn entry_name(worktree: &Worktree) -> &str {
     if worktree.main {
         "(main)"
@@ -613,6 +713,47 @@ mod tests {
                 Some(Path::new("/nonexistent/app")),
                 None
             ]
+        );
+    }
+
+    #[test]
+    fn cursor_x_should_follow_the_text_into_the_branch_column() {
+        let xs = [0, 3, 4, 10].map(|col| cursor_x("tui feat/x", col, 5));
+
+        assert_eq!(xs, [0, 3, 8, 14]);
+    }
+
+    #[test]
+    fn cursor_x_should_jump_to_the_branch_column_after_a_typed_space() {
+        assert_eq!(cursor_x("tui ", 4, 5), 8);
+    }
+
+    #[test]
+    fn new_line_hint_should_say_what_the_line_creates() {
+        let hint = new_line_hint("api:tui feat/x@main");
+
+        assert_eq!(hint.content, "dir tui · branch feat/x · from main · in api");
+    }
+
+    #[test]
+    fn new_line_hint_should_say_why_a_line_cannot_be_read() {
+        let hint = new_line_hint("fix@");
+
+        assert_eq!(
+            hint.content,
+            "write a start after `@`, or leave out the `@`"
+        );
+    }
+
+    #[test]
+    fn entry_text_should_hold_the_branch_of_a_linked_worktree_only() {
+        let mut worktree = buffer().worktrees[0].clone();
+        let linked = entry_text(&worktree);
+        worktree.main = true;
+
+        assert_eq!(
+            (linked.as_str(), entry_text(&worktree).as_str()),
+            ("feat feat", "(main)")
         );
     }
 }
