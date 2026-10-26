@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- A new line that names a branch on the remote only, such as `fix` for `origin/fix`, now
+  makes a local branch that tracks it, instead of a new branch from the default branch.
+- An unknown start, such as `fix@nope`, is blocked on the confirm screen.
+
 ## 0.1.0
 
 First release.

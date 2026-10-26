@@ -104,6 +104,8 @@ pub enum Start {
     Existing,
     /// A new branch from this revision.
     From(String),
+    /// A new branch tracking this remote branch of the same name, like `origin/fix`.
+    Tracking(String),
 }
 
 /// An operation that cannot run as written; the confirm screen shows why.
@@ -248,13 +250,25 @@ fn create(
         let start = Start::From(pull.into.clone());
         fetch = Some(pull);
         start
+    } else if base.is_none()
+        && let Some(remote) = git::remote_branch(&repo, name).map_err(git_err)?
+    {
+        if context.config.fetch_on_create() {
+            fetch = remote_branch(&repo, &remote);
+        }
+        Start::Tracking(remote)
     } else {
+        let explicit = base.is_some();
         let base = match base {
             Some(base) => base.to_owned(),
             None => default_base(context, &repo).map_err(git_err)?,
         };
         if context.config.fetch_on_create() {
             fetch = remote_branch(&repo, &base);
+        }
+        // A remote branch not fetched yet only exists once its fetch runs.
+        if explicit && fetch.is_none() && !git::is_commit(&repo, &base).map_err(git_err)? {
+            return Err(format!("`{base}` is not a branch, tag or commit"));
         }
         Start::From(base)
     };
@@ -528,6 +542,18 @@ fn execute_create(create: &Create, herdr: &Herdr, notes: &mut Vec<String>) -> Re
                 &create.branch,
                 path,
                 base,
+            ];
+            git::run(&create.repo, &args)?;
+        }
+        Start::Tracking(remote) => {
+            let args = [
+                "worktree",
+                "add",
+                "--track",
+                "-b",
+                &create.branch,
+                path,
+                remote,
             ];
             git::run(&create.repo, &args)?;
         }

@@ -533,6 +533,63 @@ fn execute_create_should_note_a_failed_fetch_and_still_create() {
     );
 }
 
+#[test]
+fn prepare_create_should_track_a_branch_only_on_the_remote() {
+    let fx = Fixture::new();
+    fx.add_remote_ahead();
+    git(&fx.repo(), &["push", "-q", "origin", "main:fix"]);
+    git(&fx.repo(), &["fetch", "-q", "origin"]);
+
+    let create = fx.create("fix", None).unwrap();
+
+    assert_eq!(create.start, Start::Tracking("origin/fix".into()));
+    assert_eq!(create.fetch.unwrap().from, "refs/heads/fix");
+}
+
+#[test]
+fn execute_create_should_set_the_remote_branch_as_upstream() {
+    let fx = Fixture::new();
+    fx.add_remote_ahead();
+    git(&fx.repo(), &["push", "-q", "origin", "main:fix"]);
+    git(&fx.repo(), &["fetch", "-q", "origin"]);
+    let create = fx.create("fix", None).unwrap();
+    let path = create.path.clone();
+
+    apply::execute(&Step::Create(create), &Herdr::new()).unwrap();
+
+    let upstream = git::run(&path, &["rev-parse", "--abbrev-ref", "@{upstream}"]).unwrap();
+    assert_eq!(upstream.trim(), "origin/fix");
+}
+
+#[test]
+fn prepare_create_should_branch_from_a_given_base_over_the_remote_branch() {
+    let fx = Fixture::new();
+    fx.add_remote_ahead();
+    git(&fx.repo(), &["push", "-q", "origin", "main:fix"]);
+    git(&fx.repo(), &["fetch", "-q", "origin"]);
+
+    let create = fx.create("fix", Some("wip")).unwrap();
+
+    assert_eq!(create.start, Start::From("wip".into()));
+}
+
+#[test]
+fn prepare_create_should_block_an_unknown_base() {
+    let blocked = Fixture::new().create("fix", Some("nope")).unwrap_err();
+
+    assert_eq!(blocked.reason, "`nope` is not a branch, tag or commit");
+}
+
+#[test]
+fn prepare_create_should_allow_a_remote_base_not_fetched_yet() {
+    let fx = Fixture::new();
+    fx.add_remote_ahead();
+
+    let create = fx.create("fix", Some("origin/later")).unwrap();
+
+    assert_eq!(create.fetch.unwrap().from, "refs/heads/later");
+}
+
 impl Fixture {
     /// Adds a remote named `remote` at `dir/remote.git` holding PR `number`'s head under
     /// `pulls` (`pull` or `merge-requests`), one commit past main. Returns that commit.

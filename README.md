@@ -139,9 +139,12 @@ Type one of these on a new line:
 | `app/fix` | the same, in the repo `app` |
 | `fix@v2` | branch `fix` from `v2` |
 | `fix`, when branch `fix` exists | a worktree for the existing branch |
+| `fix`, when only `origin/fix` exists | branch `fix` that tracks `origin/fix` |
 | `#123` | pull request 123, as branch `pr-123` |
 | `review@#123` | pull request 123, as branch `review` |
 
+- jumar blocks a start that is not a branch, tag or commit before it changes anything. A
+  remote branch that is not fetched yet, such as `origin/new`, is allowed.
 - If the start is a remote branch, such as `origin/main`, jumar fetches it first. If the fetch
   fails, the worktree starts from the last fetched commit, and the report tells you.
 - A pull request comes from the `upstream` remote if it exists, else from `origin`. jumar

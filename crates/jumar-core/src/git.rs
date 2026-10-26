@@ -85,6 +85,36 @@ pub fn branch_exists(repo: &Path, name: &str) -> Result<bool> {
     ref_exists(repo, &format!("refs/heads/{name}"))
 }
 
+/// `remote/name` when a remote, `origin` first, has a fetched branch `name`.
+///
+/// # Errors
+///
+/// Fails when git fails.
+pub fn remote_branch(repo: &Path, name: &str) -> Result<Option<String>> {
+    let output = run(repo, &["remote"])?;
+    let mut remotes: Vec<&str> = output.lines().collect();
+    remotes.sort_by_key(|remote| *remote != "origin");
+    for remote in remotes {
+        if ref_exists(repo, &format!("refs/remotes/{remote}/{name}"))? {
+            return Ok(Some(format!("{remote}/{name}")));
+        }
+    }
+    Ok(None)
+}
+
+/// # Errors
+///
+/// Fails when git cannot start.
+pub fn is_commit(repo: &Path, rev: &str) -> Result<bool> {
+    let rev = format!("{rev}^{{commit}}");
+    Ok(spawn(
+        repo,
+        &["rev-parse", "--verify", "--quiet", "--end-of-options", &rev],
+    )?
+    .status
+    .success())
+}
+
 fn ref_exists(repo: &Path, full_name: &str) -> Result<bool> {
     yes_no(repo, &["show-ref", "--verify", "--quiet", full_name])
 }

@@ -417,6 +417,12 @@ fn details(item: &Item, home: &Path) -> Vec<Line<'static>> {
                         format!("new {} from {base}, fetched first", create.branch)
                     }
                     Start::From(base) => format!("new {} from {base}", create.branch),
+                    Start::Tracking(remote) if create.fetch.is_some() => {
+                        format!("new {} tracking {remote}, fetched first", create.branch)
+                    }
+                    Start::Tracking(remote) => {
+                        format!("new {} tracking {remote}", create.branch)
+                    }
                 },
             ));
             if !create.copy.is_empty() {
