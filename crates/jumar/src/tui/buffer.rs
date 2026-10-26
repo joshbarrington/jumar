@@ -254,7 +254,7 @@ impl Buffer {
     /// `focused` is false while a pop-up sits on top, which then owns the cursor.
     /// `pick` shows the keys that choose worktrees for an agent.
     pub fn render(&mut self, frame: &mut Frame, focused: bool, pick: bool) {
-        let area = super::framed(frame, frame.area(), "jumar", self.summary());
+        let area = super::framed(frame, super::screen(frame), "jumar", self.summary());
         let [header, list, _, status] = Layout::vertical([
             Constraint::Length(1),
             Constraint::Fill(1),

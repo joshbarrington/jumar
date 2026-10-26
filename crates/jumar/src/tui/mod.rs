@@ -12,7 +12,7 @@ use anyhow::Result;
 use jumar_core::apply::{self, Context};
 use jumar_core::config::ToolMode;
 use jumar_core::editor::{Action, Key, Mode};
-use jumar_core::herdr::Herdr;
+use jumar_core::herdr::{HERDR_POPUP_ENV, Herdr};
 use jumar_core::model::Health;
 use jumar_core::plan::{self, EntryId};
 use jumar_core::safety::Tier;
@@ -413,6 +413,20 @@ fn mode_tag(tag: &str, color: Color) -> Span<'static> {
         .bold()
 }
 
+/// The area jumar draws in. herdr keeps a blank column right of a popup's terminal, so in
+/// one jumar leaves its first column blank too, to sit centred in the popup.
+fn screen(frame: &Frame) -> Rect {
+    let area = frame.area();
+    if std::env::var_os(HERDR_POPUP_ENV).is_none() || area.width < 2 {
+        return area;
+    }
+    Rect {
+        x: area.x + 1,
+        width: area.width - 1,
+        ..area
+    }
+}
+
 /// Draws the rounded frame every screen sits in and returns the padded area inside it.
 fn framed(frame: &mut Frame, area: Rect, title: &str, info: Line) -> Rect {
     let block = Block::bordered()
@@ -430,7 +444,7 @@ fn framed(frame: &mut Frame, area: Rect, title: &str, info: Line) -> Rect {
 /// `footer`. Returns the list and footer areas inside it.
 fn popup(frame: &mut Frame, title: &str, lines: &[Line], footer: &Line) -> (Rect, Rect) {
     const BORDER_AND_PADDING: (usize, usize) = (6, 2);
-    let screen = frame.area();
+    let screen = screen(frame);
     frame
         .buffer_mut()
         .set_style(screen, Style::new().add_modifier(Modifier::DIM));

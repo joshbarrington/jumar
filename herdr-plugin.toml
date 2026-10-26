@@ -12,7 +12,8 @@ command = ["bash", "herdr/install.sh"]
 
 [[panes]]
 id = "pane"
-title = "jumar"
+# herdr requires a title, but jumar draws its own; a zero-width one shows nothing.
+title = "\u200B"
 placement = "popup"
 width = "80%"
 height = "80%"

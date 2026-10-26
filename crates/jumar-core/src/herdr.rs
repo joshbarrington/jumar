@@ -18,6 +18,9 @@ use crate::{Error, Result};
 const READ_TIMEOUT: Duration = Duration::from_secs(5);
 const CHANGE_TIMEOUT: Duration = Duration::from_secs(60);
 
+/// Set in the environment of jumar's own herdr popup.
+pub const HERDR_POPUP_ENV: &str = "JUMAR_HERDR_POPUP";
+
 #[derive(Debug, Clone)]
 pub struct Herdr {
     bin: OsString,
@@ -149,6 +152,8 @@ impl Herdr {
             entrypoint,
             "--placement",
             "popup",
+            "--env",
+            &format!("{HERDR_POPUP_ENV}=1"),
         ];
         self.call(&args).map(drop)
     }
