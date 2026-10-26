@@ -59,7 +59,6 @@ fn main() -> anyhow::Result<()> {
             output.finish(&text)
         }
         None => {
-            let _pane = plugin::PaneRecord::register();
             if let tui::Outcome::Open(path) = tui::run(false)? {
                 shell::hand_off(&path)?;
             }

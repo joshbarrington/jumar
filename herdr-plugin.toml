@@ -13,7 +13,9 @@ command = ["bash", "herdr/install.sh"]
 [[panes]]
 id = "pane"
 title = "jumar"
-placement = "overlay"
+placement = "popup"
+width = "80%"
+height = "80%"
 command = ["bin/jumar"]
 
 # For agents: the launcher in skills/jumar opens this with JUMAR_PICK_OUTPUT set.

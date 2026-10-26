@@ -133,19 +133,12 @@ impl Herdr {
         self.call(&["workspace", "close", workspace]).map(drop)
     }
 
-    /// # Errors
-    ///
-    /// Fails when herdr refuses.
-    pub fn close_pane(&self, pane: &str) -> Result<()> {
-        self.call(&["pane", "close", pane]).map(drop)
-    }
-
-    /// Opens one of a plugin's panes as a floating overlay.
+    /// Opens one of a plugin's panes as a popup floating over the session.
     ///
     /// # Errors
     ///
     /// Fails when herdr refuses.
-    pub fn open_overlay(&self, plugin: &str, entrypoint: &str) -> Result<()> {
+    pub fn open_popup(&self, plugin: &str, entrypoint: &str) -> Result<()> {
         let args = [
             "plugin",
             "pane",
@@ -155,8 +148,7 @@ impl Herdr {
             "--entrypoint",
             entrypoint,
             "--placement",
-            "overlay",
-            "--focus",
+            "popup",
         ];
         self.call(&args).map(drop)
     }
