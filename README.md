@@ -151,8 +151,8 @@ The branch is the last word, so a directory name can contain spaces. A checkout 
 branch, such as a detached one, has only its directory to edit.
 
 Before it moves anything, jumar blocks a new branch name that git does not allow, that already
-exists, or that clashes with a branch it would nest under or over: `jb/fix` cannot exist next
-to `jb`. You cannot rename a worktree or its branch while a herdr agent runs in it.
+exists, or that clashes with a branch it would nest under or over: `feat/fix` cannot exist next
+to `feat`. You cannot rename a worktree or its branch while a herdr agent runs in it.
 
 ### Create
 
@@ -184,7 +184,7 @@ what it will create, or why it can't:
   remote branch that is not fetched yet, such as `origin/new`, is allowed when
   `fetch_on_create` is on. If its fetch fails, nothing is created.
 - Two lines cannot use the same directory or the same branch, or branches that nest, such as
-  `jb` and `jb/a`. A new line also cannot use a branch that the same save removes or renames;
+  `feat` and `feat/a`. A new line also cannot use a branch that the same save removes or renames;
   apply that first.
 - If the start is a remote branch, such as `origin/main`, jumar fetches it first. If the fetch
   fails, the worktree starts from the last fetched commit, and the report tells you.
