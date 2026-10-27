@@ -18,7 +18,7 @@ use ratatui::style::{Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
-use super::{column_width, hints, mode_tag, pad, theme, to_u16, width};
+use super::{column_width, hints, mode_tag, pad, theme, to_u16, truncate, width, window};
 use crate::discover::{self, Scan};
 use crate::format::{self, InspectResult};
 
@@ -75,6 +75,8 @@ const GAP: &str = "   ";
 /// Rows sit under their group's title; the mark column comes first.
 const INDENT: &str = "  ";
 const MARK_WIDTH: usize = 2;
+/// Columns cut to fit the frame keep at least this many columns.
+const MIN_CUT: usize = 8;
 
 impl Buffer {
     pub fn new(scan: Scan, tools: &[Tool]) -> Self {
@@ -293,7 +295,7 @@ impl Buffer {
         .areas(area);
         let status = super::footer_area(status);
         let rows = self.rows();
-        let widths = column_widths(&rows);
+        let widths = fit(column_widths(&rows), usize::from(list.width));
         let display = group(&rows);
         let (row, col) = self.editor.cursor();
         let cursor_pos = self.editor.rows().position(|(index, _)| index == row);
@@ -306,6 +308,10 @@ impl Buffer {
         let scroll = cursor_line.map_or(self.scroll, |line| {
             scroll_to(&display, line, self.scroll, height)
         });
+        let drawn = focused && !matches!(self.editor.mode(), Mode::Command | Mode::Filter);
+        let cells = cursor_pos
+            .filter(|_| drawn)
+            .map(|pos| cursor_cells(&rows[pos], col, widths));
 
         let selected: HashSet<usize> = self.selected().collect();
         let titles = HEADERS.map(|h| (h.to_owned(), Style::new().fg(theme::GRAY).bold()));
@@ -319,15 +325,11 @@ impl Buffer {
             .take(height)
             .map(|(index, item)| match item {
                 Display::Gap => Line::default(),
-                Display::Group(repo) => Line::from(vec![
-                    Span::raw("\u{f418} ").fg(theme::YELLOW),
-                    Span::raw(format::file_name(repo)).fg(theme::YELLOW).bold(),
-                    Span::raw("  "),
-                    Span::raw(format::tilde(repo, &self.home)).fg(theme::GRAY),
-                ]),
+                Display::Group(repo) => group_line(repo, &self.home, list.width),
                 Display::Hint(pos) => hint_line(&rows[*pos]),
                 Display::Row(pos) => {
-                    let line = row_line(&rows[*pos], widths);
+                    let cursor = cells.as_ref().filter(|_| Some(index) == cursor_line);
+                    let line = row_line(&rows[*pos], widths, cursor);
                     if selected.contains(pos) {
                         line.bg(theme::BG2)
                     } else if Some(index) == cursor_line {
@@ -372,16 +374,8 @@ impl Buffer {
                 // A list too short to show the cursor's line, such as a 0-row pane while
                 // a split opens, leaves the cursor hidden.
                 let y = cursor_line.and_then(|line| line.checked_sub(scroll));
-                if let (Some(pos), Some(y)) = (cursor_pos, y.filter(|y| *y < height)) {
-                    let x = width(INDENT)
-                        + MARK_WIDTH
-                        + cursor_x(
-                            rows[pos].text,
-                            rows[pos].name,
-                            rows[pos].branch_text,
-                            col,
-                            widths[0],
-                        );
+                if let (Some((_, _, x)), Some(y)) = (&cells, y.filter(|y| *y < height)) {
+                    let x = width(INDENT) + MARK_WIDTH + x;
                     frame.set_cursor_position((list.x + to_u16(x), list.y + to_u16(y)));
                 }
             }
@@ -482,8 +476,7 @@ fn group<'a>(rows: &[Row<'a>]) -> Vec<Display<'a>> {
     display
 }
 
-/// The width of each column but the last, which is left unpadded.
-fn column_widths(rows: &[Row]) -> [usize; 5] {
+fn column_widths(rows: &[Row]) -> [usize; 6] {
     [
         column_width(rows.iter().map(|r| r.name).chain([HEADERS[0]])),
         column_width(rows.iter().map(|r| r.branch.as_str()).chain([HEADERS[1]])),
@@ -494,7 +487,46 @@ fn column_widths(rows: &[Row]) -> [usize; 5] {
                 .chain([HEADERS[3]]),
         ),
         column_width(rows.iter().map(|r| r.source).chain([HEADERS[4]])),
+        column_width(
+            rows.iter()
+                .map(|r| r.herdr.content.as_ref())
+                .chain([HEADERS[5]]),
+        ),
     ]
+}
+
+/// Fits the columns in `available`: hides SOURCE, then AGE, then narrows the wider of NAME
+/// and BRANCH, then STATUS, none below `MIN_CUT`. Past that it hides HERDR, then STATUS,
+/// then narrows NAME and BRANCH to a column each. A hidden column has width 0.
+fn fit(mut widths: [usize; 6], available: usize) -> [usize; 6] {
+    let total = |widths: &[usize; 6]| {
+        let shown = widths.iter().filter(|w| **w > 0).count();
+        width(INDENT)
+            + MARK_WIDTH
+            + widths.iter().sum::<usize>()
+            + width(GAP) * shown.saturating_sub(1)
+    };
+    let hide = |widths: &mut [usize; 6], columns: [usize; 2]| {
+        for column in columns {
+            if total(widths) > available {
+                widths[column] = 0;
+            }
+        }
+    };
+    let narrow = |widths: &mut [usize; 6], min: usize| {
+        while total(widths) > available {
+            let wider = usize::from(widths[1] > widths[0]);
+            let Some(column) = [wider, 1 - wider, 2].into_iter().find(|&c| widths[c] > min) else {
+                break;
+            };
+            widths[column] -= 1;
+        }
+    };
+    hide(&mut widths, [4, 3]);
+    narrow(&mut widths, MIN_CUT);
+    hide(&mut widths, [5, 2]);
+    narrow(&mut widths, 1);
+    widths
 }
 
 fn age(result: Option<&InspectResult>, now: i64) -> Span<'static> {
@@ -515,11 +547,24 @@ fn age(result: Option<&InspectResult>, now: i64) -> Span<'static> {
     }
 }
 
-fn row_line(row: &Row, widths: [usize; 5]) -> Line<'static> {
+/// `cursor` holds the name and branch cells from `cursor_cells` when the cursor is drawn
+/// on this line.
+fn row_line(
+    row: &Row,
+    widths: [usize; 6],
+    cursor: Option<&(String, String, usize)>,
+) -> Line<'static> {
+    let (name, branch) = match cursor {
+        Some((name, branch, _)) => (name.clone(), branch.clone()),
+        None => (
+            truncate(row.name, widths[0]),
+            truncate(&row.branch, widths[1]),
+        ),
+    };
     let cells = [
-        (row.name.to_owned(), row.style.add_modifier(Modifier::BOLD)),
-        (row.branch.clone(), row.branch_style),
-        (row.state.clone(), row.state_style),
+        (name, row.style.add_modifier(Modifier::BOLD)),
+        (branch, row.branch_style),
+        (truncate(&row.state, widths[2]), row.state_style),
         (row.age.content.to_string(), row.age.style),
         (row.source.to_owned(), Style::new().fg(theme::GRAY)),
         (row.herdr.content.to_string(), row.herdr.style),
@@ -527,51 +572,70 @@ fn row_line(row: &Row, widths: [usize; 5]) -> Line<'static> {
     columns(Some(&row.mark), cells, widths)
 }
 
-/// The last column is left unpadded. Without a mark, the first cell starts in its slot.
+/// Skips hidden columns and leaves the last one unpadded. Without a mark, the first cell
+/// starts in its slot.
 fn columns(
     mark: Option<&Span<'static>>,
     cells: [(String, Style); 6],
-    widths: [usize; 5],
+    widths: [usize; 6],
 ) -> Line<'static> {
     let mut spans = vec![Span::raw(INDENT)];
     if let Some(mark) = mark {
         spans.push(Span::raw(pad(&mark.content, MARK_WIDTH)).style(mark.style));
     }
+    let first = widths.iter().position(|w| *w > 0);
+    let last = widths.iter().rposition(|w| *w > 0);
     for (index, (text, style)) in cells.into_iter().enumerate() {
-        if index > 0 {
+        if widths[index] == 0 {
+            continue;
+        }
+        if Some(index) != first {
             spans.push(Span::raw(GAP));
         }
-        let text = widths
-            .get(index)
-            .map_or_else(|| text.clone(), |w| pad(&text, *w));
+        let text = if Some(index) == last {
+            text
+        } else {
+            pad(&text, widths[index])
+        };
         spans.push(Span::styled(text, style));
     }
     Line::from(spans)
 }
 
-/// Where the cursor at char `col` of `text` sits on screen: within its directory `name`,
-/// the gap after it, or its `branch`, whose column starts `name_width` plus the gap in.
-/// Both are trimmed parts of `text`; a line without a branch to edit is all directory.
-fn cursor_x(text: &str, name: &str, branch: Option<&str>, col: usize, name_width: usize) -> usize {
+/// The cursor line's name and branch cells, cut to their columns but with the cursor kept
+/// in view, and the cursor's screen column. The cursor, at char `col` of `text`, sits
+/// within the directory `name`, the gap after it, or the branch. Both are trimmed parts of
+/// `text`; a line without a branch to edit is all directory.
+fn cursor_cells(row: &Row, col: usize, widths: [usize; 6]) -> (String, String, usize) {
+    let text = row.text;
     let chars: Vec<char> = text.chars().collect();
     let col_of = |byte: usize| text[..byte].chars().count();
-    let span = |from: usize, to: usize| width(&chars[from..to].iter().collect::<String>());
     let lead = col_of(text.len() - text.trim_start().len());
-    let Some(branch) = branch else {
-        return span(lead.min(col), col.min(chars.len()));
+    let dir_end = lead + row.name.chars().count();
+    let branch_x = widths[0] + width(GAP);
+    // Past the directory, it stays cut to its end, so the text just typed stays in view.
+    let at_dir = || {
+        let (name, x) = window(row.name, col.saturating_sub(lead), widths[0]);
+        let past = col.min(chars.len()).saturating_sub(dir_end);
+        let x = (x + past).min(branch_x - 1);
+        (name, truncate(&row.branch, widths[1]), x)
     };
-    let dir_end = lead + name.chars().count();
+    let Some(branch) = row.branch_text else {
+        return at_dir();
+    };
     let rest = if branch.is_empty() {
         chars.len()
     } else {
         col_of(text.trim_end().len() - branch.len())
     };
-    if col <= dir_end {
-        span(lead.min(col), col)
-    } else if col < rest {
-        (span(lead, dir_end) + col - dir_end).min(name_width + width(GAP) - 1)
+    if col < rest {
+        at_dir()
     } else {
-        name_width + width(GAP) + span(rest, col.min(chars.len()))
+        let (cell, x) = window(branch, col - rest, widths[1]);
+        let past = col
+            .min(chars.len())
+            .saturating_sub(rest + branch.chars().count());
+        (truncate(row.name, widths[0]), cell, branch_x + x + past)
     }
 }
 
@@ -589,6 +653,22 @@ fn scroll_to(display: &[Display], line: usize, scroll: usize, height: usize) -> 
         _ => line,
     };
     scroll.min(top).max((bottom + 1).saturating_sub(height))
+}
+
+/// The repo's name and path, cut to `room` columns.
+fn group_line(repo: &Path, home: &Path, room: u16) -> Line<'static> {
+    const ICON: &str = "\u{f418} ";
+    let room = usize::from(room).saturating_sub(width(ICON));
+    let name = truncate(&format::file_name(repo), room);
+    let path_room = room.saturating_sub(width(&name) + 2);
+    let path = truncate(&format::tilde(repo, home), path_room);
+    let gap = if path.is_empty() { "" } else { "  " };
+    Line::from(vec![
+        Span::raw(ICON).fg(theme::YELLOW),
+        Span::raw(name).fg(theme::YELLOW).bold(),
+        Span::raw(gap),
+        Span::raw(path).fg(theme::GRAY),
+    ])
 }
 
 fn hint_line(row: &Row) -> Line<'static> {
@@ -705,28 +785,148 @@ mod tests {
     }
 
     #[test]
+    fn render_should_cut_long_names_to_fit_the_frame() {
+        let mut worktree = buffer().worktrees[0].clone();
+        worktree.head = Some(Head::Branch(format!("feat/{}", "x".repeat(80))));
+        let mut other = worktree.clone();
+        other.path = PathBuf::from(format!(
+            "/nonexistent/app/.claude/worktrees/{}",
+            "d".repeat(40)
+        ));
+        let scan = Scan {
+            worktrees: vec![worktree, other],
+            warnings: Vec::new(),
+        };
+        let mut buffer = Buffer::new(scan, &[]);
+        let mut terminal = Terminal::new(TestBackend::new(60, 10)).expect("terminal");
+        terminal
+            .draw(|frame| buffer.render(frame, true, false))
+            .expect("draw");
+        let screen = terminal.backend().buffer();
+        let line = |y: u16| -> String { (0..60).map(|x| screen[(x, y)].symbol()).collect() };
+
+        assert!(line(2).contains("HERDR"), "header cut: {}", line(2));
+        // The cursor sits on the first line, at the start of its name.
+        assert!(
+            line(4).contains("feat              feat/xxxxxxxxx…"),
+            "{}",
+            line(4)
+        );
+        assert!(line(5).contains("d…   feat/xxxxxxxxx…"), "{}", line(5));
+    }
+
+    #[test]
+    fn fit_should_leave_columns_that_fit() {
+        assert_eq!(fit([4, 6, 6, 3, 6, 5], 80), [4, 6, 6, 3, 6, 5]);
+    }
+
+    #[test]
+    fn fit_should_hide_source_then_age_before_cutting() {
+        // Indent, mark and gaps take 19 columns with all six shown, 16 with five.
+        assert_eq!(fit([4, 6, 6, 3, 6, 5], 48), [4, 6, 6, 3, 0, 5]);
+        assert_eq!(fit([4, 6, 6, 3, 6, 5], 39), [4, 6, 6, 0, 0, 5]);
+    }
+
+    #[test]
+    fn fit_should_cut_the_wider_of_name_and_branch_first() {
+        assert_eq!(fit([10, 40, 6, 3, 6, 5], 48), [10, 14, 6, 0, 0, 5]);
+        assert_eq!(fit([20, 20, 6, 3, 6, 5], 41), [8, 9, 6, 0, 0, 5]);
+    }
+
+    #[test]
+    fn fit_should_hide_herdr_then_status_past_the_shortest_cut() {
+        assert_eq!(fit([8, 8, 8, 3, 6, 5], 37), [8, 8, 8, 0, 0, 0]);
+        assert_eq!(fit([8, 8, 8, 3, 6, 5], 30), [8, 8, 0, 0, 0, 0]);
+        assert_eq!(fit([8, 8, 8, 3, 6, 5], 12), [2, 3, 0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn fit_should_cut_status_last() {
+        assert_eq!(fit([8, 8, 30, 3, 6, 5], 45), [8, 8, 11, 0, 0, 5]);
+    }
+
+    fn row<'a>(text: &'a str, name: &'a str, branch: Option<&'a str>) -> Row<'a> {
+        Row {
+            repo: None,
+            mark: Span::raw(""),
+            text,
+            name,
+            branch_text: branch,
+            branch: branch.unwrap_or("-").to_owned(),
+            branch_style: Style::new(),
+            hint: None,
+            state: String::new(),
+            age: Span::raw(""),
+            source: "",
+            herdr: Span::raw(""),
+            style: Style::new(),
+            state_style: Style::new(),
+        }
+    }
+
+    fn cursor_x(
+        text: &str,
+        name: &str,
+        branch: Option<&str>,
+        col: usize,
+        widths: [usize; 2],
+    ) -> usize {
+        let row = row(text, name, branch);
+        cursor_cells(&row, col, [widths[0], widths[1], 6, 3, 6, 5]).2
+    }
+
+    #[test]
     fn cursor_x_should_follow_the_text_into_the_branch_column() {
-        let xs = [0, 3, 4, 10].map(|col| cursor_x("tui feat/x", "tui", Some("feat/x"), col, 5));
+        let xs =
+            [0, 3, 4, 10].map(|col| cursor_x("tui feat/x", "tui", Some("feat/x"), col, [5, 8]));
 
         assert_eq!(xs, [0, 3, 8, 14]);
     }
 
     #[test]
     fn cursor_x_should_jump_to_the_branch_column_after_a_typed_space() {
-        assert_eq!(cursor_x("tui ", "tui", Some(""), 4, 5), 8);
+        assert_eq!(cursor_x("tui ", "tui", Some(""), 4, [5, 8]), 8);
     }
 
     #[test]
     fn cursor_x_should_put_a_spaced_directory_before_the_last_word() {
         let text = "my dir feat";
-        let xs = [5, 7].map(|col| cursor_x(text, "my dir", Some("feat"), col, 6));
+        let xs = [5, 7].map(|col| cursor_x(text, "my dir", Some("feat"), col, [6, 8]));
 
         assert_eq!(xs, [5, 9]);
     }
 
     #[test]
     fn cursor_x_should_keep_a_line_without_a_branch_in_its_directory() {
-        assert_eq!(cursor_x("my dir ", "my dir", None, 7, 6), 7);
+        assert_eq!(cursor_x("my dir ", "my dir", None, 7, [6, 8]), 7);
+    }
+
+    #[test]
+    fn cursor_cells_should_keep_the_end_of_a_cut_directory_after_a_typed_space() {
+        let text = "a-very-long-dir  ";
+        let row = row(text, "a-very-long-dir", Some(""));
+        let cells = [15, 16].map(|col| cursor_cells(&row, col, [8, 10, 6, 3, 6, 5]));
+
+        assert_eq!(cells[0].0, "…ng-dir");
+        assert_eq!(cells[1].0, "…ng-dir");
+        assert_eq!([cells[0].2, cells[1].2], [7, 8]);
+    }
+
+    #[test]
+    fn cursor_x_should_keep_a_cut_directory_out_of_the_branch_column() {
+        assert_eq!(
+            cursor_x("a-very-long-dir      ", "a-very-long-dir", None, 21, [8, 8]),
+            10
+        );
+    }
+
+    #[test]
+    fn cursor_cells_should_cut_the_branch_being_typed_from_the_start() {
+        let text = "tui feat/a-long-branch";
+        let row = row(text, "tui", Some("feat/a-long-branch"));
+        let cells = cursor_cells(&row, text.chars().count(), [5, 10, 6, 3, 6, 5]);
+
+        assert_eq!(cells, ("tui".into(), "…g-branch".into(), 17));
     }
 
     #[test]

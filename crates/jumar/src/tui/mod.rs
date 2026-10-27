@@ -502,6 +502,49 @@ fn pad(text: &str, to: usize) -> String {
     format!("{text}{}", " ".repeat(to.saturating_sub(width(text))))
 }
 
+/// Cuts `text` to `to` columns, ending in `…` when anything was cut.
+fn truncate(text: &str, to: usize) -> String {
+    if width(text) <= to {
+        return text.to_owned();
+    }
+    let mut out = String::new();
+    for c in text.chars() {
+        if width(&format!("{out}{c}")) + 1 > to {
+            break;
+        }
+        out.push(c);
+    }
+    if to > 0 {
+        out.push('…');
+    }
+    out
+}
+
+/// Cuts `text` to `to` columns like `truncate`, but keeps char `at` in view, cutting the
+/// start too, behind a `…`, when `at` lies past the cut. Returns the text and `at`'s column.
+fn window(text: &str, at: usize, to: usize) -> (String, usize) {
+    let chars: Vec<char> = text.chars().collect();
+    let at = at.min(chars.len());
+    let cols = |from: usize, end: usize| width(&chars[from..end].iter().collect::<String>());
+    if width(text) <= to {
+        return (text.to_owned(), cols(0, at));
+    }
+    if (at < chars.len() && cols(0, at + 1) < to) || to < 3 {
+        return (truncate(text, to), cols(0, at).min(to.saturating_sub(1)));
+    }
+    // Room for the leading `…`, the cursor's char, and a trailing `…` when more follows.
+    let room = if at < chars.len() {
+        to.saturating_sub(2 + cols(at, at + 1))
+    } else {
+        to - 2
+    };
+    let start = (0..at).find(|&s| cols(s, at) <= room).unwrap_or(at);
+    let before = cols(start, at);
+    let after = truncate(&chars[at..].iter().collect::<String>(), to - 1 - before);
+    let shown = chars[start..at].iter().collect::<String>();
+    (format!("…{shown}{after}"), 1 + before)
+}
+
 fn to_u16(n: usize) -> u16 {
     u16::try_from(n).unwrap_or(u16::MAX)
 }
@@ -513,6 +556,33 @@ mod tests {
     #[test]
     fn pad_should_use_display_width() {
         assert_eq!(pad("🟢", 3), "🟢 ");
+    }
+
+    #[test]
+    fn truncate_should_end_a_cut_text_in_an_ellipsis() {
+        let cut = ["feat/x", "feat/long", "🟢🟢", "ab"].map(|t| truncate(t, 6));
+
+        assert_eq!(cut, ["feat/x", "feat/…", "🟢🟢", "ab"]);
+    }
+
+    #[test]
+    fn window_should_keep_the_char_at_the_cursor_in_view() {
+        let windows = [0, 4, 9, 12].map(|at| window("feat/longer!", at, 8));
+
+        assert_eq!(
+            windows,
+            [
+                ("feat/lo…".into(), 0),
+                ("feat/lo…".into(), 4),
+                ("…/longe…".into(), 6),
+                ("…onger!".into(), 7),
+            ]
+        );
+    }
+
+    #[test]
+    fn window_should_keep_a_wide_char_at_the_cursor_in_view() {
+        assert_eq!(window("abcdefgh🟢xyz", 8, 8), ("…efgh🟢…".into(), 5));
     }
 
     #[test]
