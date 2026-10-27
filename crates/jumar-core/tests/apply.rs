@@ -1292,7 +1292,7 @@ fn execute_split_should_put_the_main_checkout_back_when_the_worktree_fails() {
     fs::write(fx.repo().join("notes.txt"), "draft").unwrap();
     let split = fx.split(id).unwrap();
     fs::create_dir_all(&split.create.path).unwrap();
-    fs::write(split.create.path.join("in-the-way"), "").unwrap();
+    git::run(&split.create.path, &["init", "-q"]).unwrap();
 
     let result = apply::execute(&Step::Split(Box::new(split)), &Herdr::new());
 

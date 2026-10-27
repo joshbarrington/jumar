@@ -328,9 +328,16 @@ fn split(context: &Context, refs: &mut RefCache, id: EntryId) -> Result<Split, S
         pull: None,
     };
     let create = create(context, refs, &target, Some(id))?;
-    let changes = git::run(&main.path, &["status", "--short"])
+    let changes = git::run(&main.path, &["status", "--short", "--untracked-files=all"])
         .map_err(git_err)?
         .lines()
+        .filter(|line| {
+            !main
+                .path
+                .join(line.get(3..).unwrap_or_default())
+                .join(".git")
+                .exists()
+        })
         .map(str::to_owned)
         .collect();
     Ok(Split {
