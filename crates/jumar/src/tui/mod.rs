@@ -502,6 +502,24 @@ fn pad(text: &str, to: usize) -> String {
     format!("{text}{}", " ".repeat(to.saturating_sub(width(text))))
 }
 
+/// Cuts `text` to `to` columns, ending in `…` when anything was cut.
+fn truncate(text: &str, to: usize) -> String {
+    if width(text) <= to {
+        return text.to_owned();
+    }
+    let mut out = String::new();
+    for c in text.chars() {
+        if width(&format!("{out}{c}")) + 1 > to {
+            break;
+        }
+        out.push(c);
+    }
+    if to > 0 {
+        out.push('…');
+    }
+    out
+}
+
 fn to_u16(n: usize) -> u16 {
     u16::try_from(n).unwrap_or(u16::MAX)
 }
@@ -513,6 +531,13 @@ mod tests {
     #[test]
     fn pad_should_use_display_width() {
         assert_eq!(pad("🟢", 3), "🟢 ");
+    }
+
+    #[test]
+    fn truncate_should_end_a_cut_text_in_an_ellipsis() {
+        let cut = ["feat/x", "feat/long", "🟢🟢", "ab"].map(|t| truncate(t, 6));
+
+        assert_eq!(cut, ["feat/x", "feat/…", "🟢🟢", "ab"]);
     }
 
     #[test]

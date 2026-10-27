@@ -18,7 +18,7 @@ use ratatui::style::{Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
-use super::{column_width, hints, mode_tag, pad, theme, to_u16, width};
+use super::{column_width, hints, mode_tag, pad, theme, to_u16, truncate, width};
 use crate::discover::{self, Scan};
 use crate::format::{self, InspectResult};
 
@@ -293,7 +293,7 @@ impl Buffer {
         .areas(area);
         let status = super::footer_area(status);
         let rows = self.rows();
-        let widths = column_widths(&rows);
+        let widths = fit_branch(column_widths(&rows), &rows, usize::from(list.width));
         let display = group(&rows);
         let (row, col) = self.editor.cursor();
         let cursor_pos = self.editor.rows().position(|(index, _)| index == row);
@@ -319,15 +319,11 @@ impl Buffer {
             .take(height)
             .map(|(index, item)| match item {
                 Display::Gap => Line::default(),
-                Display::Group(repo) => Line::from(vec![
-                    Span::raw("\u{f418} ").fg(theme::YELLOW),
-                    Span::raw(format::file_name(repo)).fg(theme::YELLOW).bold(),
-                    Span::raw("  "),
-                    Span::raw(format::tilde(repo, &self.home)).fg(theme::GRAY),
-                ]),
+                Display::Group(repo) => group_line(repo, &self.home),
                 Display::Hint(pos) => hint_line(&rows[*pos]),
                 Display::Row(pos) => {
-                    let line = row_line(&rows[*pos], widths);
+                    let typing = self.editor.mode() == Mode::Insert && Some(index) == cursor_line;
+                    let line = row_line(&rows[*pos], widths, typing);
                     if selected.contains(pos) {
                         line.bg(theme::BG2)
                     } else if Some(index) == cursor_line {
@@ -497,6 +493,19 @@ fn column_widths(rows: &[Row]) -> [usize; 5] {
     ]
 }
 
+/// Narrows the branch column so every column fits in `available`, down to its header.
+fn fit_branch(mut widths: [usize; 5], rows: &[Row], available: usize) -> [usize; 5] {
+    let herdr = column_width(
+        rows.iter()
+            .map(|r| r.herdr.content.as_ref())
+            .chain([HEADERS[5]]),
+    );
+    let total = width(INDENT) + MARK_WIDTH + widths.iter().sum::<usize>() + 5 * width(GAP) + herdr;
+    let over = total.saturating_sub(available);
+    widths[1] = widths[1].saturating_sub(over).max(width(HEADERS[1]));
+    widths
+}
+
 fn age(result: Option<&InspectResult>, now: i64) -> Span<'static> {
     match result
         .and_then(|r| r.as_ref().ok())
@@ -515,10 +524,17 @@ fn age(result: Option<&InspectResult>, now: i64) -> Span<'static> {
     }
 }
 
-fn row_line(row: &Row, widths: [usize; 5]) -> Line<'static> {
+/// `whole` keeps a branch wider than its column instead of cutting it, so the line being
+/// typed into stays in view.
+fn row_line(row: &Row, widths: [usize; 5], whole: bool) -> Line<'static> {
+    let branch = if whole {
+        row.branch.clone()
+    } else {
+        truncate(&row.branch, widths[1])
+    };
     let cells = [
         (row.name.to_owned(), row.style.add_modifier(Modifier::BOLD)),
-        (row.branch.clone(), row.branch_style),
+        (branch, row.branch_style),
         (row.state.clone(), row.state_style),
         (row.age.content.to_string(), row.age.style),
         (row.source.to_owned(), Style::new().fg(theme::GRAY)),
@@ -589,6 +605,15 @@ fn scroll_to(display: &[Display], line: usize, scroll: usize, height: usize) -> 
         _ => line,
     };
     scroll.min(top).max((bottom + 1).saturating_sub(height))
+}
+
+fn group_line(repo: &Path, home: &Path) -> Line<'static> {
+    Line::from(vec![
+        Span::raw("\u{f418} ").fg(theme::YELLOW),
+        Span::raw(format::file_name(repo)).fg(theme::YELLOW).bold(),
+        Span::raw("  "),
+        Span::raw(format::tilde(repo, home)).fg(theme::GRAY),
+    ])
 }
 
 fn hint_line(row: &Row) -> Line<'static> {
@@ -702,6 +727,29 @@ mod tests {
                 assert!(drawn.is_ok(), "draw failed at {width}x{height}");
             }
         }
+    }
+
+    #[test]
+    fn render_should_cut_long_branches_to_fit_the_frame() {
+        let mut buffer = buffer();
+        let mut worktree = buffer.worktrees[0].clone();
+        worktree.head = Some(Head::Branch(format!("feat/{}", "x".repeat(80))));
+        let scan = Scan {
+            worktrees: vec![worktree],
+            warnings: Vec::new(),
+        };
+        buffer = Buffer::new(scan, &[]);
+        let mut terminal = Terminal::new(TestBackend::new(60, 10)).expect("terminal");
+        terminal
+            .draw(|frame| buffer.render(frame, false, false))
+            .expect("draw");
+        let screen = terminal.backend().buffer();
+        let row: String = (0..60)
+            .map(|x| screen[(x, 4)].symbol().to_owned())
+            .collect();
+
+        assert!(row.contains('…'), "branch not cut: {row}");
+        assert!(row.contains("claude"), "source column pushed off: {row}");
     }
 
     #[test]
