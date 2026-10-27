@@ -7,6 +7,8 @@
 - The worktree table fits the pane: long names are cut and columns hide in narrow panes, while
   the cursor line stays in view.
 - Esc drops a new line that is still blank.
+- A new line's hint shows short examples, like `branch@base` and `repo:branch`, and wraps
+  to fit the pane instead of running off its edge.
 
 ## 0.1.0
 

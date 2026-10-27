@@ -65,7 +65,12 @@ enum Display<'a> {
     Gap,
     Group(&'a Path),
     Row(usize),
-    Hint(usize),
+    /// One line of a new line's hint, wrapped to fit; the first carries the arrow.
+    Hint {
+        text: String,
+        style: Style,
+        first: bool,
+    },
 }
 
 const HEADERS: [&str; 6] = ["NAME", "BRANCH", "STATUS", "AGE", "SOURCE", "HERDR"];
@@ -75,6 +80,7 @@ const GAP: &str = "   ";
 /// Rows sit under their group's title; the mark column comes first.
 const INDENT: &str = "  ";
 const MARK_WIDTH: usize = 2;
+const ARROW: &str = "↳ ";
 /// Columns cut to fit the frame keep at least this many columns.
 const MIN_CUT: usize = 8;
 
@@ -296,7 +302,9 @@ impl Buffer {
         let status = super::footer_area(status);
         let rows = self.rows();
         let widths = fit(column_widths(&rows), usize::from(list.width));
-        let display = group(&rows);
+        let hint_room =
+            usize::from(list.width).saturating_sub(width(INDENT) + MARK_WIDTH + width(ARROW));
+        let display = group(&rows, hint_room);
         let (row, col) = self.editor.cursor();
         let cursor_pos = self.editor.rows().position(|(index, _)| index == row);
         let cursor_line = cursor_pos.and_then(|pos| {
@@ -326,7 +334,7 @@ impl Buffer {
             .map(|(index, item)| match item {
                 Display::Gap => Line::default(),
                 Display::Group(repo) => group_line(repo, &self.home, list.width),
-                Display::Hint(pos) => hint_line(&rows[*pos]),
+                Display::Hint { text, style, first } => hint_line(text, *style, *first),
                 Display::Row(pos) => {
                     let cursor = cells.as_ref().filter(|_| Some(index) == cursor_line);
                     let line = row_line(&rows[*pos], widths, cursor);
@@ -454,8 +462,9 @@ fn read_herdr() -> Receiver<herdr::State> {
     rx
 }
 
-/// Lays rows out under a title for each repo, in the order they come.
-fn group<'a>(rows: &[Row<'a>]) -> Vec<Display<'a>> {
+/// Lays rows out under a title for each repo, in the order they come, with hints wrapped
+/// to `hint_room` columns.
+fn group<'a>(rows: &[Row<'a>], hint_room: usize) -> Vec<Display<'a>> {
     let mut display = Vec::new();
     let mut current = None;
     for (pos, row) in rows.iter().enumerate() {
@@ -469,8 +478,14 @@ fn group<'a>(rows: &[Row<'a>]) -> Vec<Display<'a>> {
             current = Some(repo);
         }
         display.push(Display::Row(pos));
-        if row.hint.is_some() {
-            display.push(Display::Hint(pos));
+        if let Some(hint) = &row.hint {
+            for (index, text) in wrap(&hint.content, hint_room).into_iter().enumerate() {
+                display.push(Display::Hint {
+                    text,
+                    style: hint.style,
+                    first: index == 0,
+                });
+            }
         }
     }
     display
@@ -648,10 +663,11 @@ fn scroll_to(display: &[Display], line: usize, scroll: usize, height: usize) -> 
         _ => line,
     };
     // A new line's hint scrolls into view with it.
-    let bottom = match display.get(line + 1) {
-        Some(Display::Hint(_)) => line + 1,
-        _ => line,
-    };
+    let bottom = line
+        + display[line + 1..]
+            .iter()
+            .take_while(|d| matches!(d, Display::Hint { .. }))
+            .count();
     scroll.min(top).max((bottom + 1).saturating_sub(height))
 }
 
@@ -671,12 +687,51 @@ fn group_line(repo: &Path, home: &Path, room: u16) -> Line<'static> {
     ])
 }
 
-fn hint_line(row: &Row) -> Line<'static> {
+fn hint_line(text: &str, style: Style, first: bool) -> Line<'static> {
+    let arrow = if first { ARROW } else { "  " };
     Line::from(vec![
         Span::raw(" ".repeat(width(INDENT) + MARK_WIDTH)),
-        Span::raw("↳ ").fg(theme::GRAY),
-        row.hint.clone().unwrap_or_default(),
+        Span::raw(arrow).fg(theme::GRAY),
+        Span::raw(text.to_owned()).style(style),
     ])
+}
+
+/// Breaks `text` into lines of at most `room` columns: between ` · ` items where it can,
+/// then between words, then inside a word too long for a line.
+fn wrap(text: &str, room: usize) -> Vec<String> {
+    let mut lines: Vec<String> = Vec::new();
+    for item in text.split(" · ") {
+        match lines.last_mut() {
+            Some(last) if width(last) + width(" · ") + width(item) <= room => {
+                last.push_str(" · ");
+                last.push_str(item);
+            }
+            _ => lines.extend(wrap_words(item, room)),
+        }
+    }
+    lines
+}
+
+fn wrap_words(text: &str, room: usize) -> Vec<String> {
+    let mut lines = Vec::new();
+    let mut line = String::new();
+    for word in text.split(' ') {
+        if !line.is_empty() {
+            if width(&line) + 1 + width(word) <= room {
+                line.push(' ');
+            } else {
+                lines.push(std::mem::take(&mut line));
+            }
+        }
+        for c in word.chars() {
+            if !line.is_empty() && width(&format!("{line}{c}")) > room {
+                lines.push(std::mem::take(&mut line));
+            }
+            line.push(c);
+        }
+    }
+    lines.push(line);
+    lines
 }
 
 /// What a new line will create, or why it can't.
@@ -684,7 +739,7 @@ fn hint_line(row: &Row) -> Line<'static> {
 fn new_line_hint(text: &str, in_repo: bool) -> Span<'static> {
     if text.trim().is_empty() {
         let help = if in_repo {
-            "[dir] branch[@base]  ·  [dir] #pr_number  ·  [dir] branch@#pr_number  ·  repo: in front for another repo"
+            "branch · dir branch · branch@base · #123 · repo:branch"
         } else {
             "type a repo's path, then : and a branch, like ~/code/app:feat"
         };
@@ -747,6 +802,7 @@ fn mark(result: Option<&InspectResult>) -> Span<'static> {
 
 #[cfg(test)]
 mod tests {
+    use jumar_core::editor::Key;
     use jumar_core::model::Head;
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
@@ -927,6 +983,53 @@ mod tests {
         let cells = cursor_cells(&row, text.chars().count(), [5, 10, 6, 3, 6, 5]);
 
         assert_eq!(cells, ("tui".into(), "…g-branch".into(), 17));
+    }
+
+    #[test]
+    fn render_should_wrap_a_new_line_hint_to_fit_the_frame() {
+        let mut buffer = buffer();
+        buffer.editor.handle(Key::Char('o'));
+        let mut terminal = Terminal::new(TestBackend::new(32, 12)).expect("terminal");
+        terminal
+            .draw(|frame| buffer.render(frame, true, false))
+            .expect("draw");
+        let screen = terminal.backend().buffer();
+        let line = |y: u16| -> String { (0..32).map(|x| screen[(x, y)].symbol()).collect() };
+        let shown: Vec<String> = (0..12).map(line).collect();
+
+        let hint = shown
+            .iter()
+            .position(|l| l.contains('↳'))
+            .unwrap_or_else(|| panic!("no hint in {shown:#?}"));
+        assert!(shown[hint].contains("branch · dir branch"), "{shown:#?}");
+        assert!(shown[hint + 1].contains("branch@base · #123"), "{shown:#?}");
+        assert!(shown[hint + 2].contains("repo:branch"), "{shown:#?}");
+    }
+
+    #[test]
+    fn wrap_should_break_between_items_then_words_then_inside_a_word() {
+        assert_eq!(wrap("ab · cd · ef", 7), ["ab · cd", "ef"]);
+        assert_eq!(
+            wrap("write a base after it", 10),
+            ["write a", "base after", "it"]
+        );
+        assert_eq!(wrap("x feat/abcdefgh", 6), ["x", "feat/a", "bcdefg", "h"]);
+        assert_eq!(
+            wrap("anything", 0),
+            ["a", "n", "y", "t", "h", "i", "n", "g"]
+        );
+    }
+
+    #[test]
+    fn scroll_to_should_keep_every_line_of_a_wrapped_hint_in_view() {
+        let hint = || Display::Hint {
+            text: String::new(),
+            style: Style::new(),
+            first: false,
+        };
+        let display = [Display::Row(0), Display::Row(1), hint(), hint(), hint()];
+
+        assert_eq!(scroll_to(&display, 1, 0, 3), 2);
     }
 
     #[test]
