@@ -1,6 +1,6 @@
 id = "joshbarrington.jumar"
 name = "jumar"
-version = "0.1.0"
+version = "0.2.0"
 min_herdr_version = "0.9.3"
 platforms = ["macos", "linux"]
 description = "Manage git worktrees by editing them as a text buffer, in a floating pane."

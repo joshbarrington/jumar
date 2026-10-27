@@ -9,7 +9,7 @@
       "name": "jumar",
       "source": "./",
       "description": "Pick a git worktree in jumar's overlay, then work in it or pass it to the agent as context",
-      "version": "0.1.0"
+      "version": "0.2.0"
     }
   ]
 }

@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.2.0
+
+- `M` moves the main checkout's branch to a new worktree, and puts the main checkout back on
+  the default branch. Uncommitted changes move with it, and a failed move rolls back.
+- The worktree table fits the pane: long names are cut and columns hide in narrow panes, while
+  the cursor line stays in view.
+- Esc drops a new line that is still blank.
+
 ## 0.1.0
 
 First release.
