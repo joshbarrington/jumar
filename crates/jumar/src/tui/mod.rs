@@ -533,7 +533,11 @@ fn window(text: &str, at: usize, to: usize) -> (String, usize) {
         return (truncate(text, to), cols(0, at).min(to.saturating_sub(1)));
     }
     // Room for the leading `…`, the cursor's char, and a trailing `…` when more follows.
-    let room = if at < chars.len() { to - 3 } else { to - 2 };
+    let room = if at < chars.len() {
+        to.saturating_sub(2 + cols(at, at + 1))
+    } else {
+        to - 2
+    };
     let start = (0..at).find(|&s| cols(s, at) <= room).unwrap_or(at);
     let before = cols(start, at);
     let after = truncate(&chars[at..].iter().collect::<String>(), to - 1 - before);
@@ -574,6 +578,11 @@ mod tests {
                 ("…onger!".into(), 7),
             ]
         );
+    }
+
+    #[test]
+    fn window_should_keep_a_wide_char_at_the_cursor_in_view() {
+        assert_eq!(window("abcdefgh🟢xyz", 8, 8), ("…efgh🟢…".into(), 5));
     }
 
     #[test]

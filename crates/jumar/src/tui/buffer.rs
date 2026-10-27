@@ -308,6 +308,10 @@ impl Buffer {
         let scroll = cursor_line.map_or(self.scroll, |line| {
             scroll_to(&display, line, self.scroll, height)
         });
+        let drawn = focused && !matches!(self.editor.mode(), Mode::Command | Mode::Filter);
+        let cells = cursor_pos
+            .filter(|_| drawn)
+            .map(|pos| cursor_cells(&rows[pos], col, widths));
 
         let selected: HashSet<usize> = self.selected().collect();
         let titles = HEADERS.map(|h| (h.to_owned(), Style::new().fg(theme::GRAY).bold()));
@@ -324,11 +328,8 @@ impl Buffer {
                 Display::Group(repo) => group_line(repo, &self.home, list.width),
                 Display::Hint(pos) => hint_line(&rows[*pos]),
                 Display::Row(pos) => {
-                    let line = row_line(
-                        &rows[*pos],
-                        widths,
-                        (Some(index) == cursor_line).then_some(col),
-                    );
+                    let cursor = cells.as_ref().filter(|_| Some(index) == cursor_line);
+                    let line = row_line(&rows[*pos], widths, cursor);
                     if selected.contains(pos) {
                         line.bg(theme::BG2)
                     } else if Some(index) == cursor_line {
@@ -373,8 +374,8 @@ impl Buffer {
                 // A list too short to show the cursor's line, such as a 0-row pane while
                 // a split opens, leaves the cursor hidden.
                 let y = cursor_line.and_then(|line| line.checked_sub(scroll));
-                if let (Some(pos), Some(y)) = (cursor_pos, y.filter(|y| *y < height)) {
-                    let x = width(INDENT) + MARK_WIDTH + cursor_cells(&rows[pos], col, widths).2;
+                if let (Some((_, _, x)), Some(y)) = (&cells, y.filter(|y| *y < height)) {
+                    let x = width(INDENT) + MARK_WIDTH + x;
                     frame.set_cursor_position((list.x + to_u16(x), list.y + to_u16(y)));
                 }
             }
@@ -495,7 +496,8 @@ fn column_widths(rows: &[Row]) -> [usize; 6] {
 }
 
 /// Fits the columns in `available`: hides SOURCE, then AGE, then narrows the wider of NAME
-/// and BRANCH, then STATUS, none below `MIN_CUT`. A hidden column has width 0.
+/// and BRANCH, then STATUS, none below `MIN_CUT`. Past that it hides HERDR, then STATUS,
+/// then narrows NAME and BRANCH to a column each. A hidden column has width 0.
 fn fit(mut widths: [usize; 6], available: usize) -> [usize; 6] {
     let total = |widths: &[usize; 6]| {
         let shown = widths.iter().filter(|w| **w > 0).count();
@@ -504,21 +506,26 @@ fn fit(mut widths: [usize; 6], available: usize) -> [usize; 6] {
             + widths.iter().sum::<usize>()
             + width(GAP) * shown.saturating_sub(1)
     };
-    for hide in [4, 3] {
-        if total(&widths) > available {
-            widths[hide] = 0;
+    let hide = |widths: &mut [usize; 6], columns: [usize; 2]| {
+        for column in columns {
+            if total(widths) > available {
+                widths[column] = 0;
+            }
         }
-    }
-    while total(&widths) > available {
-        let wider = usize::from(widths[1] > widths[0]);
-        let Some(column) = [wider, 1 - wider, 2]
-            .into_iter()
-            .find(|&c| widths[c] > MIN_CUT)
-        else {
-            break;
-        };
-        widths[column] -= 1;
-    }
+    };
+    let narrow = |widths: &mut [usize; 6], min: usize| {
+        while total(widths) > available {
+            let wider = usize::from(widths[1] > widths[0]);
+            let Some(column) = [wider, 1 - wider, 2].into_iter().find(|&c| widths[c] > min) else {
+                break;
+            };
+            widths[column] -= 1;
+        }
+    };
+    hide(&mut widths, [4, 3]);
+    narrow(&mut widths, MIN_CUT);
+    hide(&mut widths, [5, 2]);
+    narrow(&mut widths, 1);
     widths
 }
 
@@ -540,13 +547,15 @@ fn age(result: Option<&InspectResult>, now: i64) -> Span<'static> {
     }
 }
 
-/// `cursor` is the char the cursor sits on when this is the cursor's line.
-fn row_line(row: &Row, widths: [usize; 6], cursor: Option<usize>) -> Line<'static> {
+/// `cursor` holds the name and branch cells from `cursor_cells` when the cursor is drawn
+/// on this line.
+fn row_line(
+    row: &Row,
+    widths: [usize; 6],
+    cursor: Option<&(String, String, usize)>,
+) -> Line<'static> {
     let (name, branch) = match cursor {
-        Some(col) => {
-            let (name, branch, _) = cursor_cells(row, col, widths);
-            (name, branch)
-        }
+        Some((name, branch, _)) => (name.clone(), branch.clone()),
         None => (
             truncate(row.name, widths[0]),
             truncate(&row.branch, widths[1]),
@@ -603,10 +612,13 @@ fn cursor_cells(row: &Row, col: usize, widths: [usize; 6]) -> (String, String, u
     let col_of = |byte: usize| text[..byte].chars().count();
     let lead = col_of(text.len() - text.trim_start().len());
     let dir_end = lead + row.name.chars().count();
+    let branch_x = widths[0] + width(GAP);
+    // Past the directory, it stays cut to its end, so the text just typed stays in view.
     let at_dir = || {
         let (name, x) = window(row.name, col.saturating_sub(lead), widths[0]);
         let past = col.min(chars.len()).saturating_sub(dir_end);
-        (name, truncate(&row.branch, widths[1]), x + past)
+        let x = (x + past).min(branch_x - 1);
+        (name, truncate(&row.branch, widths[1]), x)
     };
     let Some(branch) = row.branch_text else {
         return at_dir();
@@ -616,13 +628,8 @@ fn cursor_cells(row: &Row, col: usize, widths: [usize; 6]) -> (String, String, u
     } else {
         col_of(text.trim_end().len() - branch.len())
     };
-    let branch_x = widths[0] + width(GAP);
-    if col <= dir_end {
+    if col < rest {
         at_dir()
-    } else if col < rest {
-        let name = truncate(row.name, widths[0]);
-        let x = (width(&name) + col - dir_end).min(branch_x - 1);
-        (name, truncate(branch, widths[1]), x)
     } else {
         let (cell, x) = window(branch, col - rest, widths[1]);
         let past = col
@@ -655,10 +662,11 @@ fn group_line(repo: &Path, home: &Path, room: u16) -> Line<'static> {
     let name = truncate(&format::file_name(repo), room);
     let path_room = room.saturating_sub(width(&name) + 2);
     let path = truncate(&format::tilde(repo, home), path_room);
+    let gap = if path.is_empty() { "" } else { "  " };
     Line::from(vec![
         Span::raw(ICON).fg(theme::YELLOW),
         Span::raw(name).fg(theme::YELLOW).bold(),
-        Span::raw("  "),
+        Span::raw(gap),
         Span::raw(path).fg(theme::GRAY),
     ])
 }
@@ -826,6 +834,13 @@ mod tests {
     }
 
     #[test]
+    fn fit_should_hide_herdr_then_status_past_the_shortest_cut() {
+        assert_eq!(fit([8, 8, 8, 3, 6, 5], 37), [8, 8, 8, 0, 0, 0]);
+        assert_eq!(fit([8, 8, 8, 3, 6, 5], 30), [8, 8, 0, 0, 0, 0]);
+        assert_eq!(fit([8, 8, 8, 3, 6, 5], 12), [2, 3, 0, 0, 0, 0]);
+    }
+
+    #[test]
     fn fit_should_cut_status_last() {
         assert_eq!(fit([8, 8, 30, 3, 6, 5], 45), [8, 8, 11, 0, 0, 5]);
     }
@@ -884,6 +899,25 @@ mod tests {
     #[test]
     fn cursor_x_should_keep_a_line_without_a_branch_in_its_directory() {
         assert_eq!(cursor_x("my dir ", "my dir", None, 7, [6, 8]), 7);
+    }
+
+    #[test]
+    fn cursor_cells_should_keep_the_end_of_a_cut_directory_after_a_typed_space() {
+        let text = "a-very-long-dir  ";
+        let row = row(text, "a-very-long-dir", Some(""));
+        let cells = [15, 16].map(|col| cursor_cells(&row, col, [8, 10, 6, 3, 6, 5]));
+
+        assert_eq!(cells[0].0, "…ng-dir");
+        assert_eq!(cells[1].0, "…ng-dir");
+        assert_eq!([cells[0].2, cells[1].2], [7, 8]);
+    }
+
+    #[test]
+    fn cursor_x_should_keep_a_cut_directory_out_of_the_branch_column() {
+        assert_eq!(
+            cursor_x("a-very-long-dir      ", "a-very-long-dir", None, 21, [8, 8]),
+            10
+        );
     }
 
     #[test]
