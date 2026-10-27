@@ -1087,6 +1087,14 @@ mod tests {
     }
 
     #[test]
+    fn capital_m_should_do_nothing_in_visual_mode() {
+        let mut ed = editor(&["(main)", "a"]);
+
+        assert_eq!(feed(&mut ed, "VM"), None);
+        assert_eq!(ed.mode(), Mode::Visual);
+    }
+
+    #[test]
     fn insert_should_refuse_fixed_line() {
         assert_eq!(texts_after(&["(main)"], "Ax<Esc>"), ["(main)"]);
     }

@@ -71,6 +71,23 @@ fn yes_no(dir: &Path, args: &[&str]) -> Result<bool> {
     }
 }
 
+/// The commit `rev` names, or `None` when it does not exist.
+///
+/// # Errors
+///
+/// Fails when git cannot start or fails for another reason.
+pub fn resolve(dir: &Path, rev: &str) -> Result<Option<String>> {
+    let args = ["rev-parse", "--verify", "--quiet", rev];
+    let output = spawn(dir, &args)?;
+    match output.status.code() {
+        Some(0) => Ok(Some(
+            String::from_utf8_lossy(&output.stdout).trim().to_owned(),
+        )),
+        Some(1) => Ok(None),
+        _ => Err(failure(dir, &args, &output)),
+    }
+}
+
 /// # Errors
 ///
 /// Fails when either revision does not exist.

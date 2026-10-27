@@ -1244,3 +1244,65 @@ fn execute_split_should_carry_uncommitted_changes_to_the_new_worktree() {
         (false, "draft".to_owned(), String::new())
     );
 }
+
+#[test]
+fn execute_split_should_carry_changes_made_after_the_review_opened() {
+    let mut fx = Fixture::new();
+    let id = fx.main_on("side");
+    let split = fx.split(id).unwrap();
+    fs::write(fx.repo().join("late.txt"), "late").unwrap();
+
+    apply::execute(&Step::Split(Box::new(split.clone())), &Herdr::new()).unwrap();
+
+    assert_eq!(
+        (
+            fx.repo().join("late.txt").exists(),
+            split.create.path.join("late.txt").exists()
+        ),
+        (false, true)
+    );
+}
+
+#[test]
+fn execute_split_should_leave_other_stashes_alone() {
+    let mut fx = Fixture::new();
+    let id = fx.main_on("side");
+    fs::write(fx.repo().join("older.txt"), "older").unwrap();
+    git(&fx.repo(), &["stash", "push", "-q", "-u", "-m", "older"]);
+    fs::write(fx.repo().join("notes.txt"), "draft").unwrap();
+    let split = fx.split(id).unwrap();
+
+    apply::execute(&Step::Split(Box::new(split.clone())), &Herdr::new()).unwrap();
+
+    let stashes = git::run(&fx.repo(), &["stash", "list", "--format=%s"]).unwrap();
+    assert_eq!(
+        (
+            split.create.path.join("notes.txt").exists(),
+            split.create.path.join("older.txt").exists(),
+            stashes.trim()
+        ),
+        (true, false, "On side: older")
+    );
+}
+
+#[test]
+fn execute_split_should_put_the_main_checkout_back_when_the_worktree_fails() {
+    let mut fx = Fixture::new();
+    let id = fx.main_on("side");
+    fs::write(fx.repo().join("notes.txt"), "draft").unwrap();
+    let split = fx.split(id).unwrap();
+    fs::create_dir_all(&split.create.path).unwrap();
+    fs::write(split.create.path.join("in-the-way"), "").unwrap();
+
+    let result = apply::execute(&Step::Split(Box::new(split)), &Herdr::new());
+
+    assert_eq!(
+        (
+            result.is_err(),
+            current_branch(&fx.repo()),
+            fs::read_to_string(fx.repo().join("notes.txt")).unwrap(),
+            git::run(&fx.repo(), &["stash", "list"]).unwrap(),
+        ),
+        (true, "side".to_owned(), "draft".to_owned(), String::new())
+    );
+}

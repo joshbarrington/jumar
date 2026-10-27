@@ -753,41 +753,32 @@ fn execute_create(create: &Create, herdr: &Herdr, notes: &mut Vec<String>) -> Re
 fn execute_split(split: &Split, herdr: &Herdr, notes: &mut Vec<String>) -> Result<()> {
     let main = split.main.path.as_path();
     let create = &split.create;
-    let stashed = if split.changes.is_empty() {
-        false
-    } else {
-        // `stash push` succeeds without a stash when the changes have gone since.
-        let before = stash_top(main)?;
-        let message = format!("jumar: moving {} to its own worktree", create.branch);
-        git::run(
-            main,
-            &["stash", "push", "--include-untracked", "-m", &message],
-        )?;
-        stash_top(main)? != before
-    };
-    // On failure, put the main checkout back as it was; the stash keeps the changes if
-    // that fails too.
-    let restore = |branch: Option<&str>| {
-        if let Some(branch) = branch {
-            let _ = git::run(main, &["switch", branch]);
-        }
-        if stashed {
-            let _ = git::run(main, &["stash", "pop"]);
-        }
-    };
+    // Always stash, since files can change while the review is open. `stash push` succeeds
+    // without making a stash when there is nothing to save.
+    let before = git::resolve(main, "refs/stash")?;
+    let message = format!("jumar: moving {} to its own worktree", create.branch);
+    git::run(
+        main,
+        &["stash", "push", "--include-untracked", "-m", &message],
+    )?;
+    let after = git::resolve(main, "refs/stash")?;
+    let stash = after.filter(|after| before.as_ref() != Some(after));
+    let stash = stash.as_deref();
+
     if let Err(err) = git::run(main, &["switch", &split.default_branch]) {
-        restore(None);
-        return Err(err);
+        return Err(restore(main, None, stash, err));
     }
     let added = utf8(&create.path)
         .and_then(|path| git::run(main, &["worktree", "add", path, &create.branch]));
     if let Err(err) = added {
-        restore(Some(&create.branch));
-        return Err(err);
+        return Err(restore(main, Some(&create.branch), stash, err));
     }
-    if stashed && let Err(err) = git::run(&create.path, &["stash", "pop"]) {
+    if let Some(stash) = stash
+        && let Err(err) = unstash(&create.path, stash)
+    {
         notes.push(format!(
-            "your changes are still in the stash; run `git stash pop` in the new worktree: {err}"
+            "your changes are still in the stash as {stash}; run `git stash apply {stash}` \
+             in the new worktree: {err}"
         ));
     }
     let setup = set_up(create);
@@ -797,13 +788,55 @@ fn execute_split(split: &Split, herdr: &Herdr, notes: &mut Vec<String>) -> Resul
     setup
 }
 
-/// The commit `refs/stash` points at, if there is a stash.
-fn stash_top(dir: &Path) -> Result<Option<String>> {
-    match git::run(dir, &["rev-parse", "--quiet", "--verify", "refs/stash"]) {
-        Ok(out) => Ok(Some(out.trim().to_owned())),
-        Err(Error::Git { .. }) => Ok(None),
-        Err(err) => Err(err),
+/// Puts the main checkout back on `branch` with its changes after a failed split, and
+/// adds to `err` whatever could not be put back.
+fn restore(main: &Path, branch: Option<&str>, stash: Option<&str>, err: Error) -> Error {
+    let mut lost = Vec::new();
+    let switched = match branch.map(|branch| (branch, git::run(main, &["switch", branch]))) {
+        Some((branch, Err(switch))) => {
+            lost.push(format!(
+                "the main checkout stays on the default branch, not {branch} ({switch})"
+            ));
+            false
+        }
+        _ => true,
+    };
+    if let Some(stash) = stash {
+        // The changes belong on the branch, so they wait in the stash if that is not back.
+        let unstashed = if switched {
+            unstash(main, stash)
+        } else {
+            Ok(())
+        };
+        if !switched || unstashed.is_err() {
+            let why = unstashed
+                .err()
+                .map(|e| format!(" ({e})"))
+                .unwrap_or_default();
+            lost.push(format!(
+                "your changes are still in the stash as {stash}{why}"
+            ));
+        }
     }
+    if lost.is_empty() {
+        err
+    } else {
+        Error::Rollback {
+            source: Box::new(err),
+            note: lost.join("; "),
+        }
+    }
+}
+
+/// Applies the stash entry with commit `stash` in `dir`, then drops it. The stash list is
+/// shared by every worktree, so the entry is found by its commit, not as the newest.
+fn unstash(dir: &Path, stash: &str) -> Result<()> {
+    git::run(dir, &["stash", "apply", stash])?;
+    let list = git::run(dir, &["stash", "list", "--format=%H"])?;
+    if let Some(index) = list.lines().position(|line| line == stash) {
+        git::run(dir, &["stash", "drop", &format!("stash@{{{index}}}")])?;
+    }
+    Ok(())
 }
 
 fn set_up(create: &Create) -> Result<()> {

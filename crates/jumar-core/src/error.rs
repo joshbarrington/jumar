@@ -60,6 +60,12 @@ pub enum Error {
     },
     #[error("`{command}` failed in the new worktree: {output}")]
     Setup { command: String, output: String },
+    #[error("{source}; {note}")]
+    Rollback {
+        #[source]
+        source: Box<Error>,
+        note: String,
+    },
     #[error("path is not valid UTF-8: {}", .0.display())]
     NonUtf8Path(PathBuf),
 }
