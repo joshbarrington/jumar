@@ -18,7 +18,7 @@ use ratatui::style::{Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
-use super::{column_width, hints, mode_tag, pad, theme, to_u16, truncate, width};
+use super::{column_width, hints, mode_tag, pad, theme, to_u16, truncate, width, window};
 use crate::discover::{self, Scan};
 use crate::format::{self, InspectResult};
 
@@ -324,7 +324,11 @@ impl Buffer {
                 Display::Group(repo) => group_line(repo, &self.home, list.width),
                 Display::Hint(pos) => hint_line(&rows[*pos]),
                 Display::Row(pos) => {
-                    let line = row_line(&rows[*pos], widths, Some(index) == cursor_line);
+                    let line = row_line(
+                        &rows[*pos],
+                        widths,
+                        (Some(index) == cursor_line).then_some(col),
+                    );
                     if selected.contains(pos) {
                         line.bg(theme::BG2)
                     } else if Some(index) == cursor_line {
@@ -370,15 +374,7 @@ impl Buffer {
                 // a split opens, leaves the cursor hidden.
                 let y = cursor_line.and_then(|line| line.checked_sub(scroll));
                 if let (Some(pos), Some(y)) = (cursor_pos, y.filter(|y| *y < height)) {
-                    let x = width(INDENT)
-                        + MARK_WIDTH
-                        + cursor_x(
-                            rows[pos].text,
-                            rows[pos].name,
-                            rows[pos].branch_text,
-                            col,
-                            widths[0].max(width(rows[pos].name)),
-                        );
+                    let x = width(INDENT) + MARK_WIDTH + cursor_cells(&rows[pos], col, widths).2;
                     frame.set_cursor_position((list.x + to_u16(x), list.y + to_u16(y)));
                 }
             }
@@ -544,20 +540,22 @@ fn age(result: Option<&InspectResult>, now: i64) -> Span<'static> {
     }
 }
 
-/// `whole` keeps cells wider than their column instead of cutting them, for the cursor's
-/// line, whose text the cursor moves through.
-fn row_line(row: &Row, widths: [usize; 6], whole: bool) -> Line<'static> {
-    let cut = |text: &str, column: usize| {
-        if whole {
-            text.to_owned()
-        } else {
-            truncate(text, widths[column])
+/// `cursor` is the char the cursor sits on when this is the cursor's line.
+fn row_line(row: &Row, widths: [usize; 6], cursor: Option<usize>) -> Line<'static> {
+    let (name, branch) = match cursor {
+        Some(col) => {
+            let (name, branch, _) = cursor_cells(row, col, widths);
+            (name, branch)
         }
+        None => (
+            truncate(row.name, widths[0]),
+            truncate(&row.branch, widths[1]),
+        ),
     };
     let cells = [
-        (cut(row.name, 0), row.style.add_modifier(Modifier::BOLD)),
-        (cut(&row.branch, 1), row.branch_style),
-        (cut(&row.state, 2), row.state_style),
+        (name, row.style.add_modifier(Modifier::BOLD)),
+        (branch, row.branch_style),
+        (truncate(&row.state, widths[2]), row.state_style),
         (row.age.content.to_string(), row.age.style),
         (row.source.to_owned(), Style::new().fg(theme::GRAY)),
         (row.herdr.content.to_string(), row.herdr.style),
@@ -595,29 +593,42 @@ fn columns(
     Line::from(spans)
 }
 
-/// Where the cursor at char `col` of `text` sits on screen: within its directory `name`,
-/// the gap after it, or its `branch`, whose column starts `name_width` plus the gap in.
-/// Both are trimmed parts of `text`; a line without a branch to edit is all directory.
-fn cursor_x(text: &str, name: &str, branch: Option<&str>, col: usize, name_width: usize) -> usize {
+/// The cursor line's name and branch cells, cut to their columns but with the cursor kept
+/// in view, and the cursor's screen column. The cursor, at char `col` of `text`, sits
+/// within the directory `name`, the gap after it, or the branch. Both are trimmed parts of
+/// `text`; a line without a branch to edit is all directory.
+fn cursor_cells(row: &Row, col: usize, widths: [usize; 6]) -> (String, String, usize) {
+    let text = row.text;
     let chars: Vec<char> = text.chars().collect();
     let col_of = |byte: usize| text[..byte].chars().count();
-    let span = |from: usize, to: usize| width(&chars[from..to].iter().collect::<String>());
     let lead = col_of(text.len() - text.trim_start().len());
-    let Some(branch) = branch else {
-        return span(lead.min(col), col.min(chars.len()));
+    let dir_end = lead + row.name.chars().count();
+    let at_dir = || {
+        let (name, x) = window(row.name, col.saturating_sub(lead), widths[0]);
+        let past = col.min(chars.len()).saturating_sub(dir_end);
+        (name, truncate(&row.branch, widths[1]), x + past)
     };
-    let dir_end = lead + name.chars().count();
+    let Some(branch) = row.branch_text else {
+        return at_dir();
+    };
     let rest = if branch.is_empty() {
         chars.len()
     } else {
         col_of(text.trim_end().len() - branch.len())
     };
+    let branch_x = widths[0] + width(GAP);
     if col <= dir_end {
-        span(lead.min(col), col)
+        at_dir()
     } else if col < rest {
-        (span(lead, dir_end) + col - dir_end).min(name_width + width(GAP) - 1)
+        let name = truncate(row.name, widths[0]);
+        let x = (width(&name) + col - dir_end).min(branch_x - 1);
+        (name, truncate(branch, widths[1]), x)
     } else {
-        name_width + width(GAP) + span(rest, col.min(chars.len()))
+        let (cell, x) = window(branch, col - rest, widths[1]);
+        let past = col
+            .min(chars.len())
+            .saturating_sub(rest + branch.chars().count());
+        (truncate(row.name, widths[0]), cell, branch_x + x + past)
     }
 }
 
@@ -766,7 +777,7 @@ mod tests {
     }
 
     #[test]
-    fn render_should_cut_long_names_but_the_cursor_line_to_fit_the_frame() {
+    fn render_should_cut_long_names_to_fit_the_frame() {
         let mut worktree = buffer().worktrees[0].clone();
         worktree.head = Some(Head::Branch(format!("feat/{}", "x".repeat(80))));
         let mut other = worktree.clone();
@@ -787,12 +798,13 @@ mod tests {
         let line = |y: u16| -> String { (0..60).map(|x| screen[(x, y)].symbol()).collect() };
 
         assert!(line(2).contains("HERDR"), "header cut: {}", line(2));
-        assert!(!line(4).contains('…'), "cursor line cut: {}", line(4));
+        // The cursor sits on the first line, at the start of its name.
         assert!(
-            line(5).contains("dddddd…   feat/x"),
-            "line not cut: {}",
-            line(5)
+            line(4).contains("feat              feat/xxxxxxxxx…"),
+            "{}",
+            line(4)
         );
+        assert!(line(5).contains("d…   feat/xxxxxxxxx…"), "{}", line(5));
     }
 
     #[test]
@@ -818,29 +830,69 @@ mod tests {
         assert_eq!(fit([8, 8, 30, 3, 6, 5], 45), [8, 8, 11, 0, 0, 5]);
     }
 
+    fn row<'a>(text: &'a str, name: &'a str, branch: Option<&'a str>) -> Row<'a> {
+        Row {
+            repo: None,
+            mark: Span::raw(""),
+            text,
+            name,
+            branch_text: branch,
+            branch: branch.unwrap_or("-").to_owned(),
+            branch_style: Style::new(),
+            hint: None,
+            state: String::new(),
+            age: Span::raw(""),
+            source: "",
+            herdr: Span::raw(""),
+            style: Style::new(),
+            state_style: Style::new(),
+        }
+    }
+
+    fn cursor_x(
+        text: &str,
+        name: &str,
+        branch: Option<&str>,
+        col: usize,
+        widths: [usize; 2],
+    ) -> usize {
+        let row = row(text, name, branch);
+        cursor_cells(&row, col, [widths[0], widths[1], 6, 3, 6, 5]).2
+    }
+
     #[test]
     fn cursor_x_should_follow_the_text_into_the_branch_column() {
-        let xs = [0, 3, 4, 10].map(|col| cursor_x("tui feat/x", "tui", Some("feat/x"), col, 5));
+        let xs =
+            [0, 3, 4, 10].map(|col| cursor_x("tui feat/x", "tui", Some("feat/x"), col, [5, 8]));
 
         assert_eq!(xs, [0, 3, 8, 14]);
     }
 
     #[test]
     fn cursor_x_should_jump_to_the_branch_column_after_a_typed_space() {
-        assert_eq!(cursor_x("tui ", "tui", Some(""), 4, 5), 8);
+        assert_eq!(cursor_x("tui ", "tui", Some(""), 4, [5, 8]), 8);
     }
 
     #[test]
     fn cursor_x_should_put_a_spaced_directory_before_the_last_word() {
         let text = "my dir feat";
-        let xs = [5, 7].map(|col| cursor_x(text, "my dir", Some("feat"), col, 6));
+        let xs = [5, 7].map(|col| cursor_x(text, "my dir", Some("feat"), col, [6, 8]));
 
         assert_eq!(xs, [5, 9]);
     }
 
     #[test]
     fn cursor_x_should_keep_a_line_without_a_branch_in_its_directory() {
-        assert_eq!(cursor_x("my dir ", "my dir", None, 7, 6), 7);
+        assert_eq!(cursor_x("my dir ", "my dir", None, 7, [6, 8]), 7);
+    }
+
+    #[test]
+    fn cursor_cells_should_cut_the_branch_being_typed_from_the_start() {
+        let text = "tui feat/a-long-branch";
+        let row = row(text, "tui", Some("feat/a-long-branch"));
+        let cells = cursor_cells(&row, text.chars().count(), [5, 10, 6, 3, 6, 5]);
+
+        assert_eq!(cells, ("tui".into(), "…g-branch".into(), 17));
     }
 
     #[test]
