@@ -39,6 +39,11 @@ pub enum Operation {
         /// bare `name` inherits.
         near: Option<EntryId>,
     },
+    /// Move the branch of a repo's main checkout into a new worktree, and switch the main
+    /// checkout back to the default branch. Bound to a key, not written in the buffer.
+    Split {
+        id: EntryId,
+    },
 }
 
 /// An existing line's directory and branch. A branch cannot contain spaces, so it is the
@@ -580,6 +585,7 @@ mod tests {
                 Operation::Remove { .. } => "remove",
                 Operation::Move { .. } => "move",
                 Operation::Create { .. } => "create",
+                Operation::Split { .. } => "split",
             })
             .collect();
         assert_eq!(kinds, ["remove", "move", "create"]);

@@ -14,7 +14,7 @@ use jumar_core::config::ToolMode;
 use jumar_core::editor::{Action, Key, Mode};
 use jumar_core::herdr::{HERDR_POPUP_ENV, Herdr};
 use jumar_core::model::Health;
-use jumar_core::plan::{self, EntryId};
+use jumar_core::plan::{self, EntryId, Operation};
 use jumar_core::safety::Tier;
 use jumar_core::tool;
 use ratatui::crossterm::cursor::SetCursorStyle;
@@ -204,7 +204,7 @@ impl App {
                 }
                 Err(err) => editor.set_message(format!("reload failed: {err:#}")),
             },
-            Action::Open(_) | Action::Context(_) if editor.is_modified() => {
+            Action::Open(_) | Action::Context(_) | Action::Split(_) if editor.is_modified() => {
                 editor.set_message("unsaved changes (:w to apply, :q! to discard)");
             }
             Action::Open(id) if self.pick => return Some(self.picked(Use::Work, &[id])),
@@ -223,6 +223,7 @@ impl App {
                 }
             }
             Action::Tool { key, id } => return self.run_tool(key, id),
+            Action::Split(id) => self.review(vec![Operation::Split { id }], false),
             Action::Write { quit } => match plan::plan(&self.buffer.worktrees, editor.lines()) {
                 Ok(operations) if operations.is_empty() => {
                     if quit {
@@ -230,28 +231,7 @@ impl App {
                     }
                     editor.set_message("no changes");
                 }
-                Ok(operations) => {
-                    let tiers = self.buffer.tiers();
-                    let sources = self.env.config.sources();
-                    let herdr = Herdr::new().state().ok();
-                    let fallback = if Herdr::is_inside() {
-                        "herdr"
-                    } else {
-                        "claude"
-                    };
-                    let context = Context {
-                        worktrees: &self.buffer.worktrees,
-                        tiers: &tiers,
-                        sources,
-                        default_source: self.env.config.default_create_source().unwrap_or(fallback),
-                        home: &self.env.home,
-                        config: &self.env.config,
-                        herdr: herdr.as_ref(),
-                    };
-                    let items = apply::prepare(&context, operations);
-                    let worktrees = Arc::clone(&self.buffer.worktrees);
-                    self.screen = Screen::Confirm(Confirm::new(worktrees, items, quit));
-                }
+                Ok(operations) => self.review(operations, quit),
                 Err(errors) => {
                     let more = match errors.len() {
                         1 => String::new(),
@@ -282,6 +262,29 @@ impl App {
 }
 
 impl App {
+    /// Resolves `operations` against git and opens the review on them.
+    fn review(&mut self, operations: Vec<Operation>, quit: bool) {
+        let tiers = self.buffer.tiers();
+        let herdr = Herdr::new().state().ok();
+        let fallback = if Herdr::is_inside() {
+            "herdr"
+        } else {
+            "claude"
+        };
+        let context = Context {
+            worktrees: &self.buffer.worktrees,
+            tiers: &tiers,
+            sources: self.env.config.sources(),
+            default_source: self.env.config.default_create_source().unwrap_or(fallback),
+            home: &self.env.home,
+            config: &self.env.config,
+            herdr: herdr.as_ref(),
+        };
+        let items = apply::prepare(&context, operations);
+        let worktrees = Arc::clone(&self.buffer.worktrees);
+        self.screen = Screen::Confirm(Confirm::new(worktrees, items, quit));
+    }
+
     fn picked(&self, use_: Use, ids: &[EntryId]) -> Effect {
         let picked = ids
             .iter()

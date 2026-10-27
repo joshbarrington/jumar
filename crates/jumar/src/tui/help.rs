@@ -21,6 +21,10 @@ const SECTIONS: [(&str, &[(&str, &str)]); 4] = [
                 "o O",
                 "create one: branch, or dir branch; repo:…, …@start, #123 for a PR",
             ),
+            (
+                "M",
+                "on (main): move its branch to a worktree, main back to default",
+            ),
         ],
     ),
     (

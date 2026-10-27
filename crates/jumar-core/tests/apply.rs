@@ -146,9 +146,44 @@ impl Fixture {
         });
     }
 
+    /// Lists the main checkout, switched to a new branch `branch` with one commit.
+    fn main_on(&mut self, branch: &str) -> EntryId {
+        git(&self.repo(), &["switch", "-q", "-c", branch]);
+        git(
+            &self.repo(),
+            &["commit", "-q", "--allow-empty", "-m", "side"],
+        );
+        self.worktrees.push(Worktree {
+            path: self.repo(),
+            repo: self.repo(),
+            source: None,
+            head: Some(Head::Branch(branch.into())),
+            health: Health::Healthy,
+            locked: None,
+            main: true,
+            default_branch: None,
+        });
+        EntryId(self.worktrees.len() - 1)
+    }
+
+    fn split(&self, id: EntryId) -> Result<apply::Split, Blocked> {
+        self.prepare(Operation::Split { id })
+            .map(|step| match step {
+                Step::Split(split) => *split,
+                step => panic!("expected a split, got {step:?}"),
+            })
+    }
+
     fn has_branch(&self, name: &str) -> bool {
         git::branch_exists(&self.repo(), name).unwrap()
     }
+}
+
+fn current_branch(dir: &Path) -> String {
+    git::run(dir, &["branch", "--show-current"])
+        .unwrap()
+        .trim()
+        .to_owned()
 }
 
 #[test]
@@ -1128,4 +1163,84 @@ fn execute_remove_should_unlock_locked_worktree_when_forced() {
     apply::execute(&Step::Remove(remove), &Herdr::new()).unwrap();
 
     assert!(!path.exists());
+}
+
+#[test]
+fn prepare_split_should_move_the_branch_to_a_new_worktree() {
+    let mut fx = Fixture::new();
+    let id = fx.main_on("side");
+
+    let split = fx.split(id).unwrap();
+
+    assert_eq!(
+        (
+            split.default_branch.as_str(),
+            split.create.path.clone(),
+            split.create.start.clone(),
+            split.changes.len(),
+        ),
+        (
+            "main",
+            fx.repo().join(".claude/worktrees/side"),
+            Start::Existing,
+            0
+        )
+    );
+}
+
+#[test]
+fn prepare_split_should_block_a_main_checkout_on_the_default_branch() {
+    let mut fx = Fixture::new();
+    let id = fx.main_on("side");
+    git(&fx.repo(), &["switch", "-q", "main"]);
+    fx.worktrees[id.0].head = Some(Head::Branch("main".into()));
+
+    let reason = fx.split(id).unwrap_err().reason;
+
+    assert!(reason.contains("already on `main`"), "{reason}");
+}
+
+#[test]
+fn prepare_split_should_block_while_an_agent_runs_in_the_main_checkout() {
+    let mut fx = Fixture::new();
+    let id = fx.main_on("side");
+    fx.open_in_herdr(id.0, 1);
+
+    assert!(fx.split(id).is_err());
+}
+
+#[test]
+fn execute_split_should_switch_main_back_and_check_the_branch_out_in_a_worktree() {
+    let mut fx = Fixture::new();
+    let id = fx.main_on("side");
+    let split = fx.split(id).unwrap();
+
+    apply::execute(&Step::Split(Box::new(split.clone())), &Herdr::new()).unwrap();
+
+    assert_eq!(
+        (
+            current_branch(&fx.repo()),
+            current_branch(&split.create.path)
+        ),
+        ("main".to_owned(), "side".to_owned())
+    );
+}
+
+#[test]
+fn execute_split_should_carry_uncommitted_changes_to_the_new_worktree() {
+    let mut fx = Fixture::new();
+    let id = fx.main_on("side");
+    fs::write(fx.repo().join("notes.txt"), "draft").unwrap();
+    let split = fx.split(id).unwrap();
+
+    apply::execute(&Step::Split(Box::new(split.clone())), &Herdr::new()).unwrap();
+
+    assert_eq!(
+        (
+            fx.repo().join("notes.txt").exists(),
+            fs::read_to_string(split.create.path.join("notes.txt")).unwrap(),
+            git::run(&fx.repo(), &["stash", "list"]).unwrap(),
+        ),
+        (false, "draft".to_owned(), String::new())
+    );
 }

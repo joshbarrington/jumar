@@ -95,6 +95,7 @@ Run `jumar` to open the buffer. Nothing changes until you type `:w`.
 | `:clean` | remove every safe (green) worktree that the filter shows |
 | `cw` `ciw` `x` `i` `a` `A` `I` | edit the directory or branch |
 | `o` `O` | create a worktree (see [Create](#create)) |
+| `M` | on a `(main)` line, move its branch to a worktree (see [Split](#split)) |
 | `u` `Ctrl-r` | undo, redo |
 | `:w` `:wq` `:q` `:q!` | apply, apply and quit, quit, quit without saving |
 | `Enter` | go to the worktree |
@@ -192,6 +193,23 @@ what it will create, or why it can't:
   reads it with git, so it does not need `gh`. GitLab works if the remote URL contains
   "gitlab".
 - The branch of a pull request has no upstream. To push your changes, push to a new branch.
+
+### Split
+
+If you started work in the main checkout and want it in a worktree, press `M` on the
+`(main)` line. The review screen shows what happens on `y`:
+
+- The branch moves to a new worktree, in the directory that `o` would give it.
+- The main checkout switches back to the default branch of the repo.
+- Uncommitted and untracked changes move with the branch, through `git stash`.
+
+If the switch or the new worktree fails, jumar puts the main checkout back as it was. If the
+changes cannot be applied in the new worktree, they stay in the stash, and the report tells
+you.
+
+jumar blocks a split when the main checkout is already on the default branch, when another
+worktree has the default branch, or when a herdr agent runs in the main checkout. Save or
+discard your edits in the buffer first.
 
 ## What jumar finds
 

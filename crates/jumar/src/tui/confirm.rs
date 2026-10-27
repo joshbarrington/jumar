@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::mpsc::Receiver;
 
-use jumar_core::apply::{self, Blocked, Start, Step};
+use jumar_core::apply::{self, Blocked, Create, Split, Start, Step};
 use jumar_core::editor::Key;
 use jumar_core::herdr::Herdr;
 use jumar_core::model::{Head, Health, Worktree};
@@ -251,8 +251,8 @@ impl Report {
 
 /// One sentence of what `y` does with the options as they are now.
 fn summary(items: &[Item]) -> Line<'static> {
-    let (mut removes, mut deletes, mut keeps, mut moves, mut creates, mut skips) =
-        (0, 0, 0, 0, 0, 0);
+    let (mut removes, mut deletes, mut keeps, mut moves, mut creates, mut splits, mut skips) =
+        (0, 0, 0, 0, 0, 0, 0);
     for item in items {
         match item {
             Ok(Step::Remove(remove)) if remove.is_runnable() => {
@@ -265,6 +265,7 @@ fn summary(items: &[Item]) -> Line<'static> {
             }
             Ok(Step::Move(_)) => moves += 1,
             Ok(Step::Create(_)) => creates += 1,
+            Ok(Step::Split(_)) => splits += 1,
             Ok(Step::Remove(_)) | Err(_) => skips += 1,
         }
     }
@@ -274,6 +275,7 @@ fn summary(items: &[Item]) -> Line<'static> {
         (keeps, "keep", "branch"),
         (moves, "move", "worktree"),
         (creates, "create", "worktree"),
+        (splits, "move", "branch to its own worktree"),
     ]
     .into_iter()
     .filter(|(n, _, _)| *n > 0)
@@ -334,6 +336,11 @@ fn heading(item: &Item, worktrees: &[Worktree], marker: Span<'static>) -> Line<'
                 .bold(),
             );
         }
+        Ok(Step::Split(split)) => {
+            spans.push(verb("SPLIT", theme::GREEN));
+            spans.push(Span::raw("  "));
+            spans.push(Span::raw(split_subject(&split.main)).bold());
+        }
         Err(blocked) => {
             let (name, subject) = match &blocked.operation {
                 Operation::Remove { id } => ("REMOVE", label(&worktrees[id.0])),
@@ -343,6 +350,7 @@ fn heading(item: &Item, worktrees: &[Worktree], marker: Span<'static>) -> Line<'
                     rename_branch,
                 } => move_subject(&worktrees[id.0], to.as_deref(), rename_branch.as_deref()),
                 Operation::Create { target, .. } => ("CREATE", target.to_string()),
+                Operation::Split { id } => ("SPLIT", split_subject(&worktrees[id.0])),
             };
             spans.push(verb(name, theme::GRAY));
             spans.push(Span::raw("  "));
@@ -391,61 +399,108 @@ fn details(item: &Item, home: &Path) -> Vec<Line<'static>> {
                 ));
             }
         }
-        Ok(Step::Create(create)) => {
-            lines.push(field(
-                "folder",
-                format!(
-                    "creates {} ({})",
-                    format::tilde(&create.path, home),
-                    create.source
-                ),
-            ));
-            let branch = code(&create.branch);
-            lines.push(spans_field(
-                "branch",
-                match &create.start {
-                    Start::Existing => vec![Span::raw("checks out "), branch],
-                    Start::From(_)
-                        if let Some(fetch) = &create.fetch
-                            && let Some(number) = fetch.pull =>
-                    {
-                        vec![
-                            branch,
-                            Span::raw(format!(
-                                " from PR #{number} on {}, fetched first",
-                                fetch.remote
-                            )),
-                        ]
-                    }
-                    Start::From(rev) | Start::Tracking(rev) => {
-                        let how = match create.start {
-                            Start::Tracking(_) => " tracking ",
-                            _ => " from ",
-                        };
-                        let mut spans = vec![branch, Span::raw(how), code(rev)];
-                        if create.fetch.is_some() {
-                            spans.push(Span::raw(", fetched first"));
-                        }
-                        spans
-                    }
-                },
-            ));
-            if !create.copy.is_empty() {
-                let files: Vec<String> = create
-                    .copy
-                    .iter()
-                    .map(|f| f.display().to_string())
-                    .collect();
-                lines.push(field("copy", files.join(", ")));
-            }
-            for command in &create.on_create {
-                lines.push(field("run", command.clone()));
-            }
-            if create.open_in_herdr {
-                lines.push(field("herdr", "opens it in a new workspace".into()));
-            }
-        }
+        Ok(Step::Create(create)) => return create_details(create, home),
+        Ok(Step::Split(split)) => return split_details(split, home),
         Err(blocked) => lines.push(field("", blocked.reason.clone()).fg(theme::RED)),
+    }
+    lines
+}
+
+fn create_details(create: &Create, home: &Path) -> Vec<Line<'static>> {
+    let mut lines = Vec::new();
+    lines.push(field(
+        "folder",
+        format!(
+            "creates {} ({})",
+            format::tilde(&create.path, home),
+            create.source
+        ),
+    ));
+    let branch = code(&create.branch);
+    lines.push(spans_field(
+        "branch",
+        match &create.start {
+            Start::Existing => vec![Span::raw("checks out "), branch],
+            Start::From(_)
+                if let Some(fetch) = &create.fetch
+                    && let Some(number) = fetch.pull =>
+            {
+                vec![
+                    branch,
+                    Span::raw(format!(
+                        " from PR #{number} on {}, fetched first",
+                        fetch.remote
+                    )),
+                ]
+            }
+            Start::From(rev) | Start::Tracking(rev) => {
+                let how = match create.start {
+                    Start::Tracking(_) => " tracking ",
+                    _ => " from ",
+                };
+                let mut spans = vec![branch, Span::raw(how), code(rev)];
+                if create.fetch.is_some() {
+                    spans.push(Span::raw(", fetched first"));
+                }
+                spans
+            }
+        },
+    ));
+    if !create.copy.is_empty() {
+        let files: Vec<String> = create
+            .copy
+            .iter()
+            .map(|f| f.display().to_string())
+            .collect();
+        lines.push(field("copy", files.join(", ")));
+    }
+    for command in &create.on_create {
+        lines.push(field("run", command.clone()));
+    }
+    if create.open_in_herdr {
+        lines.push(field("herdr", "opens it in a new workspace".into()));
+    }
+    lines
+}
+
+fn split_details(split: &Split, home: &Path) -> Vec<Line<'static>> {
+    let branch = &split.create.branch;
+    let mut lines = vec![spans_field(
+        "main",
+        vec![
+            Span::raw("switches from "),
+            code(branch),
+            Span::raw(" back to "),
+            code(&split.default_branch),
+        ],
+    )];
+    lines.extend(create_details(&split.create, home));
+    if split.changes.is_empty() {
+        lines.push(field("changes", "none to carry over".into()));
+    } else {
+        let n = split.changes.len();
+        lines.push(field(
+            "changes",
+            format!(
+                "{} move with it, by git stash",
+                plural(n, "uncommitted change")
+            ),
+        ));
+        lines.extend(changes(&split.changes));
+    }
+    lines
+}
+
+/// The first few `git status --short` lines, dimmed.
+fn changes(changes: &[String]) -> Vec<Line<'static>> {
+    let mut lines: Vec<Line> = changes
+        .iter()
+        .take(CHANGES_SHOWN)
+        .map(|change| field("", format!("  {change}")).fg(theme::GRAY))
+        .collect();
+    if changes.len() > CHANGES_SHOWN {
+        lines
+            .push(field("", format!("  … {} more", changes.len() - CHANGES_SHOWN)).fg(theme::GRAY));
     }
     lines
 }
@@ -467,16 +522,7 @@ fn remove_details(remove: &apply::Remove, home: &Path) -> Vec<Line<'static>> {
             "",
             format!("{} lost if forced:", plural(n, "uncommitted change")),
         ));
-        lines.extend(
-            remove
-                .changes
-                .iter()
-                .take(CHANGES_SHOWN)
-                .map(|change| field("", format!("  {change}")).fg(theme::GRAY)),
-        );
-        if n > CHANGES_SHOWN {
-            lines.push(field("", format!("  … {} more", n - CHANGES_SHOWN)).fg(theme::GRAY));
-        }
+        lines.extend(changes(&remove.changes));
     }
     if let Some(workspace) = &remove.workspace {
         lines.push(field(
@@ -607,6 +653,15 @@ fn move_subject(
             ),
         ),
         (None, _) => ("RENAME", label(worktree)),
+    }
+}
+
+/// `repo  branch`, for the main checkout a split takes the branch from.
+fn split_subject(main: &Worktree) -> String {
+    let repo = format::file_name(&main.repo);
+    match &main.head {
+        Some(Head::Branch(branch)) => format!("{repo}  {branch}"),
+        _ => repo,
     }
 }
 

@@ -20,6 +20,7 @@ pub enum Step {
     Remove(Remove),
     Move(Move),
     Create(Create),
+    Split(Box<Split>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -86,6 +87,19 @@ pub struct Create {
     pub on_create: Vec<String>,
     /// The remote ref a new branch starts from, fetched first.
     pub fetch: Option<Fetch>,
+}
+
+/// Moves the branch of a repo's main checkout into a new worktree, carrying any
+/// uncommitted changes in a stash, and switches the main checkout to the default branch.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Split {
+    pub main: Worktree,
+    /// The local branch the main checkout switches to.
+    pub default_branch: String,
+    /// `git status --short` lines that move with the branch.
+    pub changes: Vec<String>,
+    /// The new worktree, which checks out the moved branch.
+    pub create: Create,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -227,6 +241,10 @@ fn claims(step: &Step) -> (Option<&Path>, Option<(&Path, &str)>) {
             Some(&step.path),
             Some((step.repo.as_path(), step.branch.as_str())),
         ),
+        Step::Split(split) => (
+            Some(&split.create.path),
+            Some((split.create.repo.as_path(), split.create.branch.as_str())),
+        ),
         Step::Remove(_) => (None, None),
     }
 }
@@ -263,7 +281,64 @@ fn resolve(context: &Context, refs: &mut RefCache, operation: &Operation) -> Res
         Operation::Create { target, near } => {
             create(context, refs, target, *near).map(Step::Create)
         }
+        Operation::Split { id } => split(context, refs, *id).map(|s| Step::Split(Box::new(s))),
     }
+}
+
+fn split(context: &Context, refs: &mut RefCache, id: EntryId) -> Result<Split, String> {
+    let main = &context.worktrees[id.0];
+    let Some(Head::Branch(branch)) = &main.head else {
+        return Err("the main checkout has no branch to move".into());
+    };
+    if workspace_for(context, main).is_some_and(|w| w.agents > 0) {
+        return Err("an agent is running in its herdr workspace".into());
+    }
+    let base = default_base(context, &main.repo).map_err(git_err)?;
+    if base == "HEAD" {
+        return Err(format!(
+            "no default branch to switch to; set default_branch for {}",
+            main.repo.display()
+        ));
+    }
+    let remotes = &refs.get(&main.repo)?.remotes;
+    let default_branch = git::split_remote(remotes, &base)
+        .map_or(base.as_str(), |(_, name)| name)
+        .to_owned();
+    if *branch == default_branch {
+        return Err(format!(
+            "the main checkout is already on `{default_branch}`"
+        ));
+    }
+    let on_default = Some(Head::Branch(default_branch.clone()));
+    if let Some(other) = context
+        .worktrees
+        .iter()
+        .find(|w| w.repo == main.repo && w.head == on_default)
+    {
+        return Err(format!(
+            "branch `{default_branch}` is checked out in {}",
+            other.path.display()
+        ));
+    }
+    let target = Target {
+        repo: None,
+        dir: plan::dir_name_for(branch),
+        name: branch.clone(),
+        base: None,
+        pull: None,
+    };
+    let create = create(context, refs, &target, Some(id))?;
+    let changes = git::run(&main.path, &["status", "--short"])
+        .map_err(git_err)?
+        .lines()
+        .map(str::to_owned)
+        .collect();
+    Ok(Split {
+        main: main.clone(),
+        default_branch,
+        changes,
+        create,
+    })
 }
 
 /// Checked before anything runs, since a failed `git branch -m` would leave a move half
@@ -538,6 +613,7 @@ pub fn execute(step: &Step, herdr: &Herdr) -> Result<Vec<String>> {
         Step::Remove(remove) => execute_remove(remove, herdr, &mut notes)?,
         Step::Move(step) => execute_move(step, herdr)?,
         Step::Create(create) => execute_create(create, herdr, &mut notes)?,
+        Step::Split(split) => execute_split(split, herdr, &mut notes)?,
     }
     Ok(notes)
 }
@@ -672,6 +748,62 @@ fn execute_create(create: &Create, herdr: &Herdr, notes: &mut Vec<String>) -> Re
     }
     setup?;
     Ok(())
+}
+
+fn execute_split(split: &Split, herdr: &Herdr, notes: &mut Vec<String>) -> Result<()> {
+    let main = split.main.path.as_path();
+    let create = &split.create;
+    let stashed = if split.changes.is_empty() {
+        false
+    } else {
+        // `stash push` succeeds without a stash when the changes have gone since.
+        let before = stash_top(main)?;
+        let message = format!("jumar: moving {} to its own worktree", create.branch);
+        git::run(
+            main,
+            &["stash", "push", "--include-untracked", "-m", &message],
+        )?;
+        stash_top(main)? != before
+    };
+    // On failure, put the main checkout back as it was; the stash keeps the changes if
+    // that fails too.
+    let restore = |branch: Option<&str>| {
+        if let Some(branch) = branch {
+            let _ = git::run(main, &["switch", branch]);
+        }
+        if stashed {
+            let _ = git::run(main, &["stash", "pop"]);
+        }
+    };
+    if let Err(err) = git::run(main, &["switch", &split.default_branch]) {
+        restore(None);
+        return Err(err);
+    }
+    let added = utf8(&create.path)
+        .and_then(|path| git::run(main, &["worktree", "add", path, &create.branch]));
+    if let Err(err) = added {
+        restore(Some(&create.branch));
+        return Err(err);
+    }
+    if stashed && let Err(err) = git::run(&create.path, &["stash", "pop"]) {
+        notes.push(format!(
+            "your changes are still in the stash; run `git stash pop` in the new worktree: {err}"
+        ));
+    }
+    let setup = set_up(create);
+    if create.open_in_herdr {
+        herdr.open(&create.path, &create.repo, false)?;
+    }
+    setup
+}
+
+/// The commit `refs/stash` points at, if there is a stash.
+fn stash_top(dir: &Path) -> Result<Option<String>> {
+    match git::run(dir, &["rev-parse", "--quiet", "--verify", "refs/stash"]) {
+        Ok(out) => Ok(Some(out.trim().to_owned())),
+        Err(Error::Git { .. }) => Ok(None),
+        Err(err) => Err(err),
+    }
 }
 
 fn set_up(create: &Create) -> Result<()> {

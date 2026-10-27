@@ -43,6 +43,8 @@ pub enum Action {
     },
     Help,
     YankPath(EntryId),
+    /// Move the branch of this main checkout into its own worktree; `M`.
+    Split(EntryId),
     /// Rescan the worktrees, dropping any edits.
     Reload,
     /// An ex command the editor does not handle itself, such as `prune`.
@@ -321,6 +323,7 @@ impl Editor {
             Key::Char(' ') => self.pending = Pending::Leader,
             Key::Char('y') => self.pending = Pending::Yank,
             Key::Char('R') => return self.reload(false),
+            Key::Char('M') => return self.split(),
             Key::Char('v' | 'V') if self.current_row().is_some() => {
                 self.anchor = self.row;
                 self.mode = Mode::Visual;
@@ -422,6 +425,17 @@ impl Editor {
             Key::Right => self.col = (self.col + 1).min(self.len()),
             Key::Esc | Key::Enter | Key::Ctrl('c') => self.finish_insert(),
             _ => {}
+        }
+    }
+
+    fn split(&mut self) -> Option<Action> {
+        let row = self.current_row()?;
+        match &self.lines[row] {
+            Line::Existing { id, .. } if self.fixed[id.0] => Some(Action::Split(*id)),
+            _ => {
+                self.set_message("M moves the branch of a main checkout to its own worktree");
+                None
+            }
         }
     }
 
@@ -1055,6 +1069,21 @@ mod tests {
     #[test]
     fn visual_d_should_skip_fixed_line() {
         assert_eq!(texts_after(&["(main)", "a", "b"], "Vjd"), ["(main)", "b"]);
+    }
+
+    #[test]
+    fn capital_m_should_split_a_main_checkout() {
+        let mut ed = editor(&["(main)", "a"]);
+
+        assert_eq!(feed(&mut ed, "M"), Some(Action::Split(EntryId(0))));
+    }
+
+    #[test]
+    fn capital_m_should_refuse_a_worktree() {
+        let mut ed = editor(&["(main)", "a"]);
+
+        assert_eq!(feed(&mut ed, "jM"), None);
+        assert!(ed.message().is_some());
     }
 
     #[test]
