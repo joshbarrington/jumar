@@ -75,6 +75,8 @@ const GAP: &str = "   ";
 /// Rows sit under their group's title; the mark column comes first.
 const INDENT: &str = "  ";
 const MARK_WIDTH: usize = 2;
+/// Columns cut to fit the frame keep at least this many columns.
+const MIN_CUT: usize = 8;
 
 impl Buffer {
     pub fn new(scan: Scan, tools: &[Tool]) -> Self {
@@ -293,7 +295,7 @@ impl Buffer {
         .areas(area);
         let status = super::footer_area(status);
         let rows = self.rows();
-        let widths = fit_branch(column_widths(&rows), &rows, usize::from(list.width));
+        let widths = fit(column_widths(&rows), usize::from(list.width));
         let display = group(&rows);
         let (row, col) = self.editor.cursor();
         let cursor_pos = self.editor.rows().position(|(index, _)| index == row);
@@ -319,11 +321,10 @@ impl Buffer {
             .take(height)
             .map(|(index, item)| match item {
                 Display::Gap => Line::default(),
-                Display::Group(repo) => group_line(repo, &self.home),
+                Display::Group(repo) => group_line(repo, &self.home, list.width),
                 Display::Hint(pos) => hint_line(&rows[*pos]),
                 Display::Row(pos) => {
-                    let typing = self.editor.mode() == Mode::Insert && Some(index) == cursor_line;
-                    let line = row_line(&rows[*pos], widths, typing);
+                    let line = row_line(&rows[*pos], widths, Some(index) == cursor_line);
                     if selected.contains(pos) {
                         line.bg(theme::BG2)
                     } else if Some(index) == cursor_line {
@@ -376,7 +377,7 @@ impl Buffer {
                             rows[pos].name,
                             rows[pos].branch_text,
                             col,
-                            widths[0],
+                            widths[0].max(width(rows[pos].name)),
                         );
                     frame.set_cursor_position((list.x + to_u16(x), list.y + to_u16(y)));
                 }
@@ -478,8 +479,7 @@ fn group<'a>(rows: &[Row<'a>]) -> Vec<Display<'a>> {
     display
 }
 
-/// The width of each column but the last, which is left unpadded.
-fn column_widths(rows: &[Row]) -> [usize; 5] {
+fn column_widths(rows: &[Row]) -> [usize; 6] {
     [
         column_width(rows.iter().map(|r| r.name).chain([HEADERS[0]])),
         column_width(rows.iter().map(|r| r.branch.as_str()).chain([HEADERS[1]])),
@@ -490,19 +490,39 @@ fn column_widths(rows: &[Row]) -> [usize; 5] {
                 .chain([HEADERS[3]]),
         ),
         column_width(rows.iter().map(|r| r.source).chain([HEADERS[4]])),
+        column_width(
+            rows.iter()
+                .map(|r| r.herdr.content.as_ref())
+                .chain([HEADERS[5]]),
+        ),
     ]
 }
 
-/// Narrows the branch column so every column fits in `available`, down to its header.
-fn fit_branch(mut widths: [usize; 5], rows: &[Row], available: usize) -> [usize; 5] {
-    let herdr = column_width(
-        rows.iter()
-            .map(|r| r.herdr.content.as_ref())
-            .chain([HEADERS[5]]),
-    );
-    let total = width(INDENT) + MARK_WIDTH + widths.iter().sum::<usize>() + 5 * width(GAP) + herdr;
-    let over = total.saturating_sub(available);
-    widths[1] = widths[1].saturating_sub(over).max(width(HEADERS[1]));
+/// Fits the columns in `available`: hides SOURCE, then AGE, then narrows the wider of NAME
+/// and BRANCH, then STATUS, none below `MIN_CUT`. A hidden column has width 0.
+fn fit(mut widths: [usize; 6], available: usize) -> [usize; 6] {
+    let total = |widths: &[usize; 6]| {
+        let shown = widths.iter().filter(|w| **w > 0).count();
+        width(INDENT)
+            + MARK_WIDTH
+            + widths.iter().sum::<usize>()
+            + width(GAP) * shown.saturating_sub(1)
+    };
+    for hide in [4, 3] {
+        if total(&widths) > available {
+            widths[hide] = 0;
+        }
+    }
+    while total(&widths) > available {
+        let wider = usize::from(widths[1] > widths[0]);
+        let Some(column) = [wider, 1 - wider, 2]
+            .into_iter()
+            .find(|&c| widths[c] > MIN_CUT)
+        else {
+            break;
+        };
+        widths[column] -= 1;
+    }
     widths
 }
 
@@ -524,18 +544,20 @@ fn age(result: Option<&InspectResult>, now: i64) -> Span<'static> {
     }
 }
 
-/// `whole` keeps a branch wider than its column instead of cutting it, so the line being
-/// typed into stays in view.
-fn row_line(row: &Row, widths: [usize; 5], whole: bool) -> Line<'static> {
-    let branch = if whole {
-        row.branch.clone()
-    } else {
-        truncate(&row.branch, widths[1])
+/// `whole` keeps cells wider than their column instead of cutting them, for the cursor's
+/// line, whose text the cursor moves through.
+fn row_line(row: &Row, widths: [usize; 6], whole: bool) -> Line<'static> {
+    let cut = |text: &str, column: usize| {
+        if whole {
+            text.to_owned()
+        } else {
+            truncate(text, widths[column])
+        }
     };
     let cells = [
-        (row.name.to_owned(), row.style.add_modifier(Modifier::BOLD)),
-        (branch, row.branch_style),
-        (row.state.clone(), row.state_style),
+        (cut(row.name, 0), row.style.add_modifier(Modifier::BOLD)),
+        (cut(&row.branch, 1), row.branch_style),
+        (cut(&row.state, 2), row.state_style),
         (row.age.content.to_string(), row.age.style),
         (row.source.to_owned(), Style::new().fg(theme::GRAY)),
         (row.herdr.content.to_string(), row.herdr.style),
@@ -543,23 +565,31 @@ fn row_line(row: &Row, widths: [usize; 5], whole: bool) -> Line<'static> {
     columns(Some(&row.mark), cells, widths)
 }
 
-/// The last column is left unpadded. Without a mark, the first cell starts in its slot.
+/// Skips hidden columns and leaves the last one unpadded. Without a mark, the first cell
+/// starts in its slot.
 fn columns(
     mark: Option<&Span<'static>>,
     cells: [(String, Style); 6],
-    widths: [usize; 5],
+    widths: [usize; 6],
 ) -> Line<'static> {
     let mut spans = vec![Span::raw(INDENT)];
     if let Some(mark) = mark {
         spans.push(Span::raw(pad(&mark.content, MARK_WIDTH)).style(mark.style));
     }
+    let first = widths.iter().position(|w| *w > 0);
+    let last = widths.iter().rposition(|w| *w > 0);
     for (index, (text, style)) in cells.into_iter().enumerate() {
-        if index > 0 {
+        if widths[index] == 0 {
+            continue;
+        }
+        if Some(index) != first {
             spans.push(Span::raw(GAP));
         }
-        let text = widths
-            .get(index)
-            .map_or_else(|| text.clone(), |w| pad(&text, *w));
+        let text = if Some(index) == last {
+            text
+        } else {
+            pad(&text, widths[index])
+        };
         spans.push(Span::styled(text, style));
     }
     Line::from(spans)
@@ -607,12 +637,18 @@ fn scroll_to(display: &[Display], line: usize, scroll: usize, height: usize) -> 
     scroll.min(top).max((bottom + 1).saturating_sub(height))
 }
 
-fn group_line(repo: &Path, home: &Path) -> Line<'static> {
+/// The repo's name and path, cut to `room` columns.
+fn group_line(repo: &Path, home: &Path, room: u16) -> Line<'static> {
+    const ICON: &str = "\u{f418} ";
+    let room = usize::from(room).saturating_sub(width(ICON));
+    let name = truncate(&format::file_name(repo), room);
+    let path_room = room.saturating_sub(width(&name) + 2);
+    let path = truncate(&format::tilde(repo, home), path_room);
     Line::from(vec![
-        Span::raw("\u{f418} ").fg(theme::YELLOW),
-        Span::raw(format::file_name(repo)).fg(theme::YELLOW).bold(),
+        Span::raw(ICON).fg(theme::YELLOW),
+        Span::raw(name).fg(theme::YELLOW).bold(),
         Span::raw("  "),
-        Span::raw(format::tilde(repo, home)).fg(theme::GRAY),
+        Span::raw(path).fg(theme::GRAY),
     ])
 }
 
@@ -730,26 +766,56 @@ mod tests {
     }
 
     #[test]
-    fn render_should_cut_long_branches_to_fit_the_frame() {
-        let mut buffer = buffer();
-        let mut worktree = buffer.worktrees[0].clone();
+    fn render_should_cut_long_names_but_the_cursor_line_to_fit_the_frame() {
+        let mut worktree = buffer().worktrees[0].clone();
         worktree.head = Some(Head::Branch(format!("feat/{}", "x".repeat(80))));
+        let mut other = worktree.clone();
+        other.path = PathBuf::from(format!(
+            "/nonexistent/app/.claude/worktrees/{}",
+            "d".repeat(40)
+        ));
         let scan = Scan {
-            worktrees: vec![worktree],
+            worktrees: vec![worktree, other],
             warnings: Vec::new(),
         };
-        buffer = Buffer::new(scan, &[]);
+        let mut buffer = Buffer::new(scan, &[]);
         let mut terminal = Terminal::new(TestBackend::new(60, 10)).expect("terminal");
         terminal
-            .draw(|frame| buffer.render(frame, false, false))
+            .draw(|frame| buffer.render(frame, true, false))
             .expect("draw");
         let screen = terminal.backend().buffer();
-        let row: String = (0..60)
-            .map(|x| screen[(x, 4)].symbol().to_owned())
-            .collect();
+        let line = |y: u16| -> String { (0..60).map(|x| screen[(x, y)].symbol()).collect() };
 
-        assert!(row.contains('…'), "branch not cut: {row}");
-        assert!(row.contains("claude"), "source column pushed off: {row}");
+        assert!(line(2).contains("HERDR"), "header cut: {}", line(2));
+        assert!(!line(4).contains('…'), "cursor line cut: {}", line(4));
+        assert!(
+            line(5).contains("dddddd…   feat/x"),
+            "line not cut: {}",
+            line(5)
+        );
+    }
+
+    #[test]
+    fn fit_should_leave_columns_that_fit() {
+        assert_eq!(fit([4, 6, 6, 3, 6, 5], 80), [4, 6, 6, 3, 6, 5]);
+    }
+
+    #[test]
+    fn fit_should_hide_source_then_age_before_cutting() {
+        // Indent, mark and gaps take 19 columns with all six shown, 16 with five.
+        assert_eq!(fit([4, 6, 6, 3, 6, 5], 48), [4, 6, 6, 3, 0, 5]);
+        assert_eq!(fit([4, 6, 6, 3, 6, 5], 39), [4, 6, 6, 0, 0, 5]);
+    }
+
+    #[test]
+    fn fit_should_cut_the_wider_of_name_and_branch_first() {
+        assert_eq!(fit([10, 40, 6, 3, 6, 5], 48), [10, 14, 6, 0, 0, 5]);
+        assert_eq!(fit([20, 20, 6, 3, 6, 5], 41), [8, 9, 6, 0, 0, 5]);
+    }
+
+    #[test]
+    fn fit_should_cut_status_last() {
+        assert_eq!(fit([8, 8, 30, 3, 6, 5], 45), [8, 8, 11, 0, 0, 5]);
     }
 
     #[test]
