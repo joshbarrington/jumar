@@ -9,6 +9,8 @@
 - Esc drops a new line that is still blank.
 - A new line's hint shows short examples, like `branch@base` and `repo:branch`, and wraps
   to fit the pane instead of running off its edge.
+- The cursor on a new line stays in the NAME column until you type a space, instead of
+  starting in the BRANCH column.
 
 ## 0.1.0
 

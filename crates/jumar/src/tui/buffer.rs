@@ -635,7 +635,8 @@ fn cursor_cells(row: &Row, col: usize, widths: [usize; 6]) -> (String, String, u
         let x = (x + past).min(branch_x - 1);
         (name, truncate(&row.branch, widths[1]), x)
     };
-    let Some(branch) = row.branch_text else {
+    // A line with nothing after its directory, such as a new one, has no branch yet.
+    let Some(branch) = row.branch_text.filter(|_| chars.len() > dir_end) else {
         return at_dir();
     };
     let rest = if branch.is_empty() {
@@ -937,6 +938,14 @@ mod tests {
             [0, 3, 4, 10].map(|col| cursor_x("tui feat/x", "tui", Some("feat/x"), col, [5, 8]));
 
         assert_eq!(xs, [0, 3, 8, 14]);
+    }
+
+    #[test]
+    fn cursor_x_should_stay_in_the_directory_until_a_space_is_typed() {
+        let xs = [("", "", 0), ("feat", "feat", 4), ("  ", "", 2)]
+            .map(|(text, name, col)| cursor_x(text, name, Some(""), col, [5, 8]));
+
+        assert_eq!(xs, [0, 4, 0]);
     }
 
     #[test]
