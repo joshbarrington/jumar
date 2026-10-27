@@ -779,14 +779,21 @@ impl Editor {
     fn finish_insert(&mut self) {
         self.mode = Mode::Normal;
         self.col = self.col.saturating_sub(1);
-        self.settle();
-        if self
-            .undo
-            .last()
-            .is_some_and(|snapshot| snapshot.lines == self.lines)
-        {
-            self.undo.pop();
+        // A new line left blank is dropped, so Esc after `o` cancels it.
+        let dropped = self.current_row().filter(
+            |&row| matches!(&self.lines[row], Line::New { text, .. } if text.trim().is_empty()),
+        );
+        if let Some(row) = dropped {
+            self.lines.remove(row);
+            self.row = row.saturating_sub(1);
         }
+        if let Some(snapshot) = self.undo.pop_if(|snapshot| snapshot.lines == self.lines)
+            && dropped.is_some()
+        {
+            self.row = snapshot.row;
+            self.col = snapshot.col;
+        }
+        self.settle();
     }
 }
 
@@ -1231,6 +1238,27 @@ mod tests {
     #[test]
     fn capital_o_should_open_new_line_above() {
         assert_eq!(texts_after(&ABC, "jOz<Esc>"), ["a", "z", "b", "c"]);
+    }
+
+    #[test]
+    fn esc_should_drop_a_blank_new_line() {
+        let mut ed = editor(&ABC);
+
+        feed(&mut ed, "jO<Esc>");
+
+        assert_eq!(texts(&ed), ABC);
+        assert_eq!(ed.cursor().0, 1);
+        assert!(!ed.is_modified());
+    }
+
+    #[test]
+    fn esc_should_drop_a_new_line_cleared_with_backspace() {
+        assert_eq!(texts_after(&ABC, "oz<BS><Esc>"), ABC);
+    }
+
+    #[test]
+    fn esc_should_leave_nothing_to_undo_after_a_blank_new_line() {
+        assert_eq!(texts_after(&ABC, "Ax<Esc>o<Esc>u"), ABC);
     }
 
     #[test]
