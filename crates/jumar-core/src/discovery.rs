@@ -49,8 +49,8 @@ pub fn repos(worktrees: &[Worktree]) -> Vec<PathBuf> {
 /// The main checkout of the repo containing `dir`, or `None` when `dir` is not in one.
 #[must_use]
 pub fn repo_containing(dir: &Path) -> Option<PathBuf> {
-    let common = git::run(dir, &["rev-parse", "--git-common-dir"]).ok()?;
-    Some(repo_from_common(&canonical(&dir.join(common.trim()))))
+    let common = git::common_dir(dir).ok()?;
+    Some(repo_from_common(&canonical(&common)))
 }
 
 /// Worktrees of `repo` that are not in `known`: its main checkout, linked ones no source

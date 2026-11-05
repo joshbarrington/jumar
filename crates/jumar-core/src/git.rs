@@ -357,6 +357,46 @@ impl Status {
     }
 }
 
+/// The repo's git dir, shared by all its worktrees.
+///
+/// # Errors
+///
+/// Fails when `dir` is not in a repo.
+pub fn common_dir(dir: &Path) -> Result<PathBuf> {
+    let common = run(dir, &["rev-parse", "--git-common-dir"])?;
+    Ok(dir.join(common.trim()))
+}
+
+/// Ignored directories in `path`, relative to it. `matching` is what keeps this quick: it
+/// lists a directory an ignore pattern matches without walking through its files. An agent
+/// may be running git in `path`, so this must not take `index.lock`.
+///
+/// # Errors
+///
+/// Fails when git fails.
+pub fn ignored_dirs(path: &Path) -> Result<Vec<String>> {
+    let args = [
+        "--no-optional-locks",
+        "status",
+        "--porcelain=v1",
+        "-z",
+        "--no-renames",
+        "--ignored=matching",
+        "--untracked-files=normal",
+        "--ignore-submodules=all",
+    ];
+    Ok(parse_ignored_dirs(&run(path, &args)?))
+}
+
+fn parse_ignored_dirs(status: &str) -> Vec<String> {
+    status
+        .split('\0')
+        .filter_map(|entry| entry.strip_prefix("!! "))
+        .filter(|path| path.ends_with('/'))
+        .map(str::to_owned)
+        .collect()
+}
+
 /// # Errors
 ///
 /// Fails when git fails or its output does not parse.
@@ -414,6 +454,13 @@ fn parse_status_header(header: &str, status: &mut Status) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parse_ignored_dirs_should_keep_only_ignored_directories() {
+        let status = "?? new/\0!! build/\0 M a.txt\0!! .env\0!! web/node_modules/\0";
+
+        assert_eq!(parse_ignored_dirs(status), ["build/", "web/node_modules/"]);
+    }
 
     #[test]
     fn short_ref_should_strip_remote_prefix() {
