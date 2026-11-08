@@ -13,6 +13,7 @@ use crate::inspect;
 use crate::model::{Head, Health, Worktree};
 use crate::plan::{self, EntryId, Operation, Target};
 use crate::safety::Tier;
+use crate::trash::Stash;
 use crate::{Error, Result};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -648,6 +649,43 @@ fn execute_remove(remove: &Remove, herdr: &Herdr, notes: &mut Vec<String>) -> Re
             &["worktree", "unlock", utf8(&worktree.path)?],
         )?;
     }
+    let stash = stash_ignored_dirs(remove);
+    if let Err(source) = remove_checkout(remove, herdr) {
+        return Err(match stash.map_or(Ok(()), Stash::restore) {
+            Ok(()) => source,
+            Err(note) => Error::Rollback {
+                source: Box::new(source),
+                note,
+            },
+        });
+    }
+    if let Some(stash) = stash {
+        stash.delete_in_background();
+    }
+    // herdr may already have deleted the branch along with the checkout.
+    if delete_branch
+        && let Some(branch) = remove.branch()
+        && git::branch_exists(&worktree.repo, branch)?
+    {
+        git::run(&worktree.repo, &["branch", "-D", branch])?;
+    }
+    Ok(())
+}
+
+/// A removal that git will refuse must leave the worktree as it was, so nothing moves for it.
+fn stash_ignored_dirs(remove: &Remove) -> Option<Stash> {
+    let worktree = &remove.worktree;
+    let removable = worktree.health == Health::Healthy
+        && (remove.force || git::status(&worktree.path).is_ok_and(|s| s.is_clean()));
+    if removable {
+        Stash::ignored_dirs(worktree)
+    } else {
+        None
+    }
+}
+
+fn remove_checkout(remove: &Remove, herdr: &Herdr) -> Result<()> {
+    let worktree = &remove.worktree;
     match &remove.workspace {
         Some(workspace) if worktree.health == Health::Healthy => {
             herdr.remove(&workspace.id, remove.force)?;
@@ -664,13 +702,6 @@ fn execute_remove(remove: &Remove, herdr: &Herdr, notes: &mut Vec<String>) -> Re
             args.push(utf8(&worktree.path)?);
             git::run(&worktree.repo, &args)?;
         }
-    }
-    // herdr may already have deleted the branch along with the checkout.
-    if delete_branch
-        && let Some(branch) = remove.branch()
-        && git::branch_exists(&worktree.repo, branch)?
-    {
-        git::run(&worktree.repo, &["branch", "-D", branch])?;
     }
     Ok(())
 }

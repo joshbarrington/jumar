@@ -6,17 +6,20 @@ mod theme;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::thread;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use jumar_core::apply::{self, Context};
 use jumar_core::config::ToolMode;
+use jumar_core::discovery;
 use jumar_core::editor::{Action, Key, Mode};
 use jumar_core::herdr::{HERDR_POPUP_ENV, Herdr};
 use jumar_core::model::Health;
 use jumar_core::plan::{self, EntryId, Operation};
 use jumar_core::safety::Tier;
 use jumar_core::tool;
+use jumar_core::trash;
 use ratatui::crossterm::cursor::SetCursorStyle;
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::crossterm::execute;
@@ -45,7 +48,14 @@ pub enum Outcome {
 /// `pick` turns Enter and Tab into choosing worktrees for an agent.
 pub fn run(pick: bool) -> Result<Outcome> {
     let env = Env::load()?;
-    let buffer = Buffer::new(discover::scan(&env)?, env.config.tools());
+    let scan = discover::scan(&env)?;
+    let repos = discovery::repos(&scan.worktrees);
+    thread::spawn(move || {
+        for repo in repos {
+            trash::sweep(&repo);
+        }
+    });
+    let buffer = Buffer::new(scan, env.config.tools());
     let mut app = App {
         env,
         buffer,

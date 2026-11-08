@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Removing a worktree no longer waits for its ignored directories, such as `node_modules`, to
+  be deleted. They are moved out of the way and deleted in the background, so the disk space
+  comes back shortly after the worktree goes.
+
 ## 0.2.0
 
 - `M` moves the main checkout's branch to a new worktree, and puts the main checkout back on

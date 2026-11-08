@@ -9,6 +9,8 @@ mod common;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
+use std::thread;
+use std::time::{Duration, Instant, SystemTime};
 
 use jumar_core::apply::{self, Blocked, Context, Start, Step};
 use jumar_core::config::Config;
@@ -17,6 +19,7 @@ use jumar_core::herdr::{self, Herdr};
 use jumar_core::model::{Head, Health, Worktree};
 use jumar_core::plan::{self, EntryId, Operation};
 use jumar_core::safety::Tier;
+use jumar_core::trash::{self, Stash};
 use tempfile::TempDir;
 
 use common::{git, init_repo};
@@ -301,6 +304,235 @@ fn execute_remove_should_discard_changes_when_forced() {
     apply::execute(&Step::Remove(remove), &Herdr::new()).unwrap();
 
     assert!(!fx.worktrees[0].path.exists());
+}
+
+/// Gives worktree 0 an ignored directory holding a file, and returns the directory.
+fn add_ignored_dir(fx: &Fixture) -> PathBuf {
+    fs::write(fx.repo().join(".git/info/exclude"), "build/\n").unwrap();
+    let build = fx.worktrees[0].path.join("build");
+    fs::create_dir(&build).unwrap();
+    fs::write(build.join("out.o"), "object").unwrap();
+    build
+}
+
+/// What the trash holds, from the repo's git dir.
+fn trash_entries(fx: &Fixture) -> usize {
+    fs::read_dir(fx.repo().join(".git/jumar-trash")).map_or(0, Iterator::count)
+}
+
+fn trash_dirs(fx: &Fixture) -> Vec<PathBuf> {
+    fs::read_dir(fx.repo().join(".git/jumar-trash"))
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .collect()
+}
+
+fn backdate_trash(fx: &Fixture) {
+    let old = SystemTime::now() - Duration::from_hours(2);
+    for dir in trash_dirs(fx) {
+        fs::File::open(dir).unwrap().set_modified(old).unwrap();
+    }
+}
+
+/// A herdr stand-in that runs `script` for every call.
+fn scripted_herdr(fx: &Fixture, script: &str) -> Herdr {
+    let bin = fx.home.join("herdr");
+    fs::write(&bin, format!("#!/bin/sh\n{script}\n")).unwrap();
+    fs::set_permissions(&bin, fs::Permissions::from_mode(0o755)).unwrap();
+    Herdr::with_bin(bin)
+}
+
+fn wait_for_empty_trash(fx: &Fixture) {
+    let start = Instant::now();
+    while trash_entries(fx) > 0 {
+        assert!(
+            start.elapsed() < Duration::from_secs(10),
+            "trash not emptied"
+        );
+        thread::sleep(Duration::from_millis(10));
+    }
+}
+
+#[test]
+fn execute_remove_should_empty_the_trash_after_removing() {
+    let fx = Fixture::new();
+    add_ignored_dir(&fx);
+
+    apply::execute(&Step::Remove(fx.remove(0)), &Herdr::new()).unwrap();
+
+    wait_for_empty_trash(&fx);
+    assert!(!fx.worktrees[0].path.exists());
+}
+
+#[test]
+fn execute_remove_should_move_ignored_dirs_before_calling_herdr() {
+    let mut fx = Fixture::new();
+    let build = add_ignored_dir(&fx);
+    fx.open_in_herdr(0, 0);
+    let (herdr, _) = fake_herdr(&fx);
+    let mut remove = fx.remove(0);
+    remove.delete_branch = false;
+
+    apply::execute(&Step::Remove(remove), &herdr).unwrap();
+
+    assert!(!build.exists());
+}
+
+#[test]
+fn execute_remove_should_not_move_ignored_dirs_of_a_dirty_worktree() {
+    let mut fx = Fixture::new();
+    let build = add_ignored_dir(&fx);
+    fx.open_in_herdr(0, 0);
+    let log = fx.home.join("seen.log");
+    let herdr = scripted_herdr(
+        &fx,
+        &format!(
+            "[ -d '{}' ] && echo here > '{}'",
+            build.display(),
+            log.display()
+        ),
+    );
+    let mut remove = fx.remove(0);
+    remove.delete_branch = false;
+    fs::write(fx.worktrees[0].path.join("notes.txt"), "wip").unwrap();
+
+    apply::execute(&Step::Remove(remove), &herdr).unwrap();
+
+    assert_eq!(fs::read_to_string(log).unwrap(), "here\n");
+}
+
+#[test]
+fn execute_remove_should_restore_ignored_dirs_when_removal_fails() {
+    let mut fx = Fixture::new();
+    let build = add_ignored_dir(&fx);
+    fx.open_in_herdr(0, 0);
+    let herdr = scripted_herdr(&fx, "exit 1");
+
+    let result = apply::execute(&Step::Remove(fx.remove(0)), &herdr);
+
+    assert_eq!(
+        (
+            result.is_err(),
+            fs::read_to_string(build.join("out.o")).unwrap().as_str(),
+            trash_entries(&fx),
+        ),
+        (true, "object", 0)
+    );
+}
+
+#[test]
+fn execute_remove_should_delete_ignored_dirs_when_failed_removal_took_the_checkout() {
+    let mut fx = Fixture::new();
+    add_ignored_dir(&fx);
+    fx.open_in_herdr(0, 0);
+    let path = fx.worktrees[0].path.clone();
+    let herdr = scripted_herdr(&fx, &format!("rm -rf '{}'; exit 1", path.display()));
+
+    let error = apply::execute(&Step::Remove(fx.remove(0)), &herdr).unwrap_err();
+
+    wait_for_empty_trash(&fx);
+    assert!(!error.to_string().contains("put back"));
+}
+
+/// Fails the removal after a build has recreated the ignored directory in the meantime.
+fn fail_with_recreated_build(fx: &mut Fixture, build: &Path) -> jumar_core::Error {
+    fx.open_in_herdr(0, 0);
+    let herdr = scripted_herdr(
+        fx,
+        &format!(
+            "mkdir '{0}'; echo new > '{0}/new.o'; exit 1",
+            build.display()
+        ),
+    );
+    apply::execute(&Step::Remove(fx.remove(0)), &herdr).unwrap_err()
+}
+
+#[test]
+fn execute_remove_should_say_where_directories_it_could_not_restore_are() {
+    let mut fx = Fixture::new();
+    let build = add_ignored_dir(&fx);
+
+    let error = fail_with_recreated_build(&mut fx, &build);
+
+    assert!(error.to_string().contains("jumar-trash"), "{error}");
+}
+
+#[test]
+fn sweep_should_never_delete_directories_kept_after_a_failed_restore() {
+    let mut fx = Fixture::new();
+    let build = add_ignored_dir(&fx);
+    fail_with_recreated_build(&mut fx, &build);
+    let kept = trash_dirs(&fx).remove(0);
+    fs::remove_dir_all(&fx.worktrees[0].path).unwrap();
+
+    backdate_trash(&fx);
+    trash::sweep(&fx.repo());
+
+    // A sweep that went ahead would drop the manifest before it starts deleting.
+    assert!(kept.join("manifest").exists());
+}
+
+#[test]
+fn execute_remove_should_recreate_a_parent_the_failed_removal_took() {
+    let mut fx = Fixture::new();
+    fs::write(fx.repo().join(".git/info/exclude"), "node_modules/\n").unwrap();
+    let path = fx.worktrees[0].path.clone();
+    fs::create_dir_all(path.join("web/node_modules")).unwrap();
+    fs::write(path.join("web/tracked"), "t").unwrap();
+    git(&path, &["add", "web/tracked"]);
+    git(&path, &["commit", "-q", "-m", "web"]);
+    fx.open_in_herdr(0, 0);
+    let herdr = scripted_herdr(&fx, &format!("rm -rf '{}/web'; exit 1", path.display()));
+
+    apply::execute(&Step::Remove(fx.remove(0)), &herdr).unwrap_err();
+
+    assert!(path.join("web/node_modules").is_dir());
+}
+
+#[test]
+fn execute_remove_should_delete_read_only_ignored_dirs() {
+    let fx = Fixture::new();
+    let build = add_ignored_dir(&fx);
+    let locked = build.join("locked");
+    fs::create_dir(&locked).unwrap();
+    fs::write(locked.join("mod.go"), "go").unwrap();
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o555)).unwrap();
+
+    apply::execute(&Step::Remove(fx.remove(0)), &Herdr::new()).unwrap();
+
+    wait_for_empty_trash(&fx);
+}
+
+#[test]
+fn sweep_should_restore_directories_of_an_interrupted_removal_only_once_old() {
+    let fx = Fixture::new();
+    let build = add_ignored_dir(&fx);
+    Stash::ignored_dirs(&fx.worktrees[0]).unwrap();
+
+    trash::sweep(&fx.repo());
+    let while_young = build.exists();
+    backdate_trash(&fx);
+    trash::sweep(&fx.repo());
+
+    assert_eq!(
+        (
+            while_young,
+            fs::read_to_string(build.join("out.o")).unwrap().as_str(),
+            trash_entries(&fx),
+        ),
+        (false, "object", 0)
+    );
+}
+
+#[test]
+fn sweep_should_delete_old_trash_without_a_manifest() {
+    let fx = Fixture::new();
+    fs::create_dir_all(fx.repo().join(".git/jumar-trash/1-1/0")).unwrap();
+
+    backdate_trash(&fx);
+    trash::sweep(&fx.repo());
+
+    wait_for_empty_trash(&fx);
 }
 
 #[test]
