@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.3.0
+## 0.2.1
 
 - Removing a worktree no longer waits for its ignored directories, such as `node_modules`, to
   be deleted. They are moved out of the way and deleted in the background, so the disk space
