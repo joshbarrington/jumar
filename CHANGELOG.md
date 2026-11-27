@@ -1,10 +1,11 @@
 # Changelog
 
-## Unreleased
+## 0.3.0
 
 - Removing a worktree no longer waits for its ignored directories, such as `node_modules`, to
   be deleted. They are moved out of the way and deleted in the background, so the disk space
   comes back shortly after the worktree goes.
+- Updates `rustix` to 1.1.6 for RUSTSEC-2026-0486.
 
 ## 0.2.0
 
